@@ -14,5 +14,5 @@ func NewEncoder(cfg builder.EncoderConfig) *Encoder {
 }
 
 func (e *Encoder) Encode(resp *message.Response) ([]byte, error) {
-	return []byte{}, nil
+	return resp.Raw, nil
 }

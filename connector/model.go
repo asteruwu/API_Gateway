@@ -1,6 +1,6 @@
 package connector
 
 type Connector interface {
-	Connect()
+	Connect() error
 	Close()
 }

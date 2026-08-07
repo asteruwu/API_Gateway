@@ -3,6 +3,7 @@ package connector
 import (
 	"API_Gateway/builder"
 	tcpfilter "API_Gateway/connector/tcp_filter"
+	"fmt"
 	"net"
 )
 
@@ -16,23 +17,35 @@ type Listener struct {
 	next    func(net.Conn) error
 }
 
+const defaultListenerPort = "6666"
+
 func NewListener(cfg builder.ConnectorConfig, next func(net.Conn) error) *Listener {
+	var port string
+	if cfg.Port == "" {
+		port = defaultListenerPort
+	} else {
+		port = cfg.Port
+	}
+
 	// 初始化 filters
+
 	return &Listener{
+		addr: fmt.Sprintf("%s:%s", "localhost", port),
 		next: next,
 	}
 }
 
 func (l *Listener) Process(conn net.Conn) {
 	// TODO
+	fmt.Println("[connector]pass connection to handler")
 	l.next(conn)
 }
 
-func (l *Listener) Connect() {
+func (l *Listener) Connect() error {
 	listener, err := net.Listen("tcp", l.addr)
 	if err != nil {
 		// TODO
-		return
+		return err
 	}
 	defer listener.Close()
 
@@ -40,6 +53,7 @@ func (l *Listener) Connect() {
 		conn, err := listener.Accept()
 		if err != nil {
 			// TODO
+			fmt.Println("[connector]failed to accept connection, drop")
 			continue
 		}
 		go l.Process(conn)

@@ -9,6 +9,7 @@ type Config struct {
 type ConnectorConfig struct {
 	// 监听端口
 	// 连接数限流 policy
+	Port string
 }
 
 type HandlerConfig struct {
