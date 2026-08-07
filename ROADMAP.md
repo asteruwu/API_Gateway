@@ -73,6 +73,7 @@ conn → Decode → message.Request → filters
 4. **backend 只认 `(service string, payload []byte)`**，对协议一无所知；协议转换全在 handler 内完成——这是「新增协议不改已有代码」的前提。
 5. **路由与负载均衡两级映射**：filter 定「请求→服务」，backend 定「服务→实例」。拆开是为重试时换实例不重跑 filter 链（避免重复鉴权、重复扣配额）。
 6. **一条 conn 一个 goroutine，filter 对象全局共享**，filter 内部状态须自保并发安全。
+7. **`Call` / 连接池 / transformer 三者绑定演进**：长连接复用需要协议边界，协议边界由 transformer 定义，而 backend 对协议一无所知——连接池不能脱离 transformer 先做。现阶段（v01-v05）`Call` 用短连接 + half-close（`CloseWrite` + 读 EOF）；v06 transformer 落地后，`Call` + `ConnPool` + 协议帧定界一起升级为长连接版。
 
 ## 已知待办（不影响结构，填肉时处理）
 
@@ -81,8 +82,17 @@ conn → Decode → message.Request → filters
 - `Decode` 缺 error 返回；返回值为值类型，而 filter 收指针
 - `builder` 的 `HandlerConfig.filter/transformer`、`BackendConfig.service` 仍是小写，反序列化填不进去
 
+## 测试基础设施
+
+- 方向：集成 testbed（`go test` 自动化），不依赖手动脚本/独立二进制。
+- 假后端作为测试 helper（goroutine 监听真实端口），行为/协议可配置，越易配置越好。
+- 网关通过配置注入拿到后端实例地址，不硬编码——测试代码启动假后端、构造 `builder.Config`、用构造函数组装网关，`main.go` 不被测试侵入。
+- 假后端协议和 transformer 绑定演进：现阶段裸字节 echo（half-close 定界），v06 起挂 gRPC handler（协议帧定界）。
+- 行为模式先做 `echo` + `fixed`，`error`/`delay` 等做到重试/熔断（v03/v06）时再加。
+
 ## 下一步（v02 端到端打通）
 
-1. `handler.Process` 跑通主流程骨架：decode → filters（假实现）→ transform → next(Call) → restore → encode
-2. decoder / encoder / filter / transformer 全部假实现，完整链路能返回数据
-3. 验证「客户端 → 网关 → 后端 → 客户端」端到端返回 echo 数据
+1. 配置注入：`ServiceConfig` 加 `Name`/`Addr`，`NewBManager` 建表，`Call` 恢复短连接网络转发（dial → half-close → 读 EOF），网关不硬编码后端地址
+2. `handler.Process` 跑通主流程骨架：decode → filters（假实现）→ transform → next(Call) → restore → encode
+3. decoder / encoder / filter / transformer 全部假实现，完整链路能返回数据
+4. 搭建集成 testbed，验证「客户端 → 网关 → 后端 → 客户端」端到端返回 echo 数据
