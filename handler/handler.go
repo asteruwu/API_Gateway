@@ -14,11 +14,11 @@ import (
 // 主流程
 
 type HTTPHandler struct {
-	decoder     *Decoder
-	encoder     *Encoder
-	filters     map[string]hf.HTTPFilter
-	transformer map[string]transformer.Transformer
-	next        func(service string, payload []byte) ([]byte, error)
+	decoder      *Decoder
+	encoder      *Encoder
+	filters      map[string]hf.HTTPFilter
+	transformers map[string]transformer.Transformer
+	next         func(service string, payload []byte) ([]byte, error)
 }
 
 const defaultReadBufferSize = 4096
@@ -27,35 +27,47 @@ func NewHandler(cfg builder.HandlerConfig, next func(service string, payload []b
 	decoder := NewDecoder(cfg.Decoder)
 	encoder := NewEncoder(cfg.Encoder)
 	// 初始化 filters 和 transformer
+	filters := buildFilter(cfg.Filter)
+	transformers := buildTransformer(cfg.Transformer)
 	return &HTTPHandler{
-		decoder: decoder,
-		encoder: encoder,
-		next:    next,
+		decoder:      decoder,
+		encoder:      encoder,
+		filters:      filters,
+		transformers: transformers,
+		next:         next,
 	}
 }
 
 func (h *HTTPHandler) Process(conn net.Conn) (*message.Response, error) {
-	buf := make([]byte, defaultReadBufferSize)
-	_, err := conn.Read(buf)
-	if err == io.EOF {
-		return nil, err
-	}
+	buf, err := io.ReadAll(conn)
 	if err != nil {
 		return nil, err
 	}
 	// TODO
 	// 1. 解析
+	msgReq := h.decoder.Decode(buf)
 	// 2. filter 编排
+	filter_0 := h.filters["testF"]
+	msgResp, err := filter_0.HandleHTTPFilt(&msgReq)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[handler]pass filter, response: %v", msgResp.Raw)
 	// 3. 协议转换
+	transformer_0 := h.transformers["testT"]
+	tResp, err := transformer_0.Transform(&msgReq)
+	if err != nil {
+		return nil, err
+	}
 	// 4. next 调用
 	log.Println("[handler]pass message to backend")
-	resp, err := h.next("", []byte{})
+	resp, err := h.next("testBackend", tResp)
 	if err != nil {
 		return nil, err
 	}
 	// 5. 协议转换
 	// return h.transformer["type"].Restore(res)
-	return &message.Response{Raw: resp}, nil
+	return transformer_0.Restore(resp)
 }
 
 func (h *HTTPHandler) HandleHTTPConn(conn net.Conn) error {
@@ -81,4 +93,22 @@ func (h *HTTPHandler) HandleHTTPConn(conn net.Conn) error {
 			return err
 		}
 	}
+}
+
+func buildFilter(cfg builder.HTTPFilterConfig) map[string]hf.HTTPFilter {
+	fMap := make(map[string]hf.HTTPFilter)
+	f := hf.TestFilter{
+		Name: "testF",
+	}
+	fMap[f.Name] = &f
+	return fMap
+}
+
+func buildTransformer(cfg builder.TransformerConfig) map[string]transformer.Transformer {
+	tMap := make(map[string]transformer.Transformer)
+	t := transformer.TestTransformer{
+		Name: "testT",
+	}
+	tMap[t.Name] = &t
+	return tMap
 }

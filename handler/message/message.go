@@ -4,6 +4,8 @@ package message
 // decoder、http_filter、transformer 胶水、encoder 都用它
 
 type Request struct {
+	Raw   []byte
+	Proto string
 }
 
 type Response struct {
