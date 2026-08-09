@@ -2,6 +2,46 @@
 
 配套 [API Gateway.drawio.svg](./API%20Gateway.drawio.svg) 架构图使用。每完成一个版本，把对应的复选框打勾，方便追踪当前进度。
 
+## 项目简介
+
+> 这一节写给第一次接触本项目的人或 AI，用于快速建立上下文。
+
+本项目是一个**从零手写的 API 网关**，Go 语言实现（module `API_Gateway`，go 1.26.4），**只用标准库**，自己在 `net.Conn` 上管理连接生命周期，不交给 `http.Server` 接管。
+
+它要解决的问题是：客户端统一讲 HTTP，后端却可能讲 gRPC、MCP 或别的协议。网关站在中间，负责**接入 → 准入控制 → 请求处理 → 协议翻译 → 转发 → 原路返回**。计划中的能力包括：连接级限流、鉴权（JWT）、HTTP 级限流、路由转发、协议转换、负载均衡、后端连接池与健康检查。
+
+### 一次请求的完整旅程
+
+```
+客户端 --HTTP--> [connector 连接层] --> [handler 处理层] --> [backend 后端层] --协议字节--> 后端服务
+                  监听/接受连接         解析/过滤/协议转换      查表/选实例/取连接
+                  连接级准入                                   转发并读回响应
+```
+
+响应沿原路返回，在 handler 内被翻译回 HTTP 并写回同一条连接。逐环节的类型流转见下文「数据流」一节。
+
+### 包结构与职责
+
+| 包 | 职责 | 关键类型 |
+|---|---|---|
+| `main.go` | **唯一的编排点**，按逆序构造各模块并接线，然后启动监听 | — |
+| `builder/` | 读配置、构建运行时配置表。**纯数据包**，不 import 任何运行时模块 | `Config` 及各子 Config |
+| `connector/` | 监听端口、Accept 连接、跑连接级过滤器，再把 conn 交给下游 | `Listener`、`Connector` |
+| `connector/tcp_filter/` | 连接级过滤器（连接数限流等），只做准入判断 | `TCPFilter` |
+| `handler/` | 处理层主流程：解码 → 过滤 → 协议转换 → 调后端 → 还原 → 编码写回 | `HTTPHandler`、`Decoder`、`Encoder` |
+| `handler/message/` | **网关唯一的中间表示**（统一 HTTP 模型），叶子包，不依赖任何包 | `Request`、`Response` |
+| `handler/http_filter/` | 请求级过滤器：鉴权、限流、路由。可放行或中断并直接产出响应 | `HTTPFilter` |
+| `handler/transformer/` | 协议转换，每个实现代表一种后端协议。协议细节全部封在实现内部 | `Transformer` |
+| `backend/` | 服务注册表、负载均衡选实例、连接池、实际转发 | `BManager`、`Service`、`Instance`、`LoadBalancer`、`ConnPool` |
+
+依赖方向单向无环：`main → {connector, handler, backend}`，三个顶层模块**互不 import**，靠 main.go 注入函数值接线；`message` 是被 `http_filter` 和 `transformer` 共享的叶子包。
+
+### 当前状态
+
+**处于骨架期（v00 已完成）。** 全部包和接口已就位，`go build ./...` 与 `go vet ./...` 通过，但**绝大多数方法是空实现**——目前还不能真正处理请求。骨架的价值在于数据流已经闭合：从 `net.Conn` 进、经完整链路到后端、再原路返回写回 conn，每一环的入参出参都对得上，后续只是往里填肉。
+
+**接手前请务必先读「架构约定」一节**——那 9 条是反复讨论后定下的边界（模块间怎么解耦、协议知识关在哪、连接池归谁、响应从哪出去），从代码本身看不出来，但改动时必须遵守。「已知待办」记录了已识别但尚未处理的问题，不必当成 bug 重复上报。
+
 ## 里程碑一览
 
 | 版本 | 里程碑 | 新增能力 |
@@ -10,7 +50,7 @@
 | v01 | 网络骨架 | connector 最简监听（单 goroutine 处理一个连接）+ 假后端 echo 服务能联通 |
 | v02 | 端到端打通 | handler 主流程骨架跑通（decoder/filter/router/transformer 全部假实现），完整链路能返回假数据 |
 | v03 | 连接层填实 | tcp_filter 编排能力（至少一个连接级限流）+ 字节流处理健壮性 |
-| v04 | 请求解析 | decoder 真正把字节流解析为结构化 HTTP 请求 |
+| v04 | 请求解析 | decoder 真正产出结构化 HTTP 请求（优先用 `http.ReadRequest`，不接管连接） |
 | v05 | 路由能力 | router 真实实现，支持配置文件定义多条路由规则 |
 | v06 | 连接抽象 | ConnPool 落地（单连接版）+ 第一个 transformer 真实实现（比如先做 gRPC） |
 | v07 | 安全认证 | 鉴权 filter 真实逻辑（JWT 校验） |
