@@ -47,4 +47,10 @@ type BackendConfig struct {
 
 type ServiceConfig struct {
 	// 具体的后端服务配置
+	Name      string
+	Instances []InstanceConfig
+}
+
+type InstanceConfig struct {
+	Addr string
 }
