@@ -43,9 +43,15 @@ func (h *HTTPHandler) Process(conn net.Conn) (*message.Response, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(buf) == 0 {
+		return nil, io.EOF
+	}
 	// TODO
 	// 1. 解析
-	msgReq := h.decoder.Decode(buf)
+	msgReq, err := h.decoder.Decode(buf)
+	if err != nil {
+		return nil, err
+	}
 	// 2. filter 编排
 	filter_0 := h.filters["testF"]
 	msgResp, err := filter_0.HandleHTTPFilt(&msgReq)

@@ -13,8 +13,8 @@ func NewDecoder(cfg builder.DecoderConfig) *Decoder {
 	return &Decoder{}
 }
 
-func (d *Decoder) Decode(raw []byte) message.Request {
+func (d *Decoder) Decode(raw []byte) (message.Request, error) {
 	return message.Request{
 		Raw: raw,
-	}
+	}, nil
 }
