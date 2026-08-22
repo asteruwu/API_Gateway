@@ -137,6 +137,11 @@ conn → Decode → message.Request → filters
 
 ## 下一步（v03 连接层填实）
 
+0. 通用错误包落地
+   1. 新建通用错误包（如 `errs/`），按模块定义各自约定好的错误
+   2. 全部错误实例为 `error` 类型，可直接作为函数返回值，不引入额外包装类型
+   3. 按模块划分错误域：connector（监听/Accept/连接准入）、handler（解码/编码/filter/transformer）、backend（服务查找/转发/连接池）
+   4. 与 v03 的「错误路径转 `message.ErrorResponse(err)` 写回」配套：错误从各层原样返回，外层统一识别转换，语义不丢
 1. tcp_filter 落地
    1. 连接数限流 filter 实现（原子计数 + 上限判断）
    2. `Listener.Process` 编排 filters：先跑连接级准入，失败直接拒绝并关闭 conn
