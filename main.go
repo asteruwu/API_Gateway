@@ -5,7 +5,7 @@ import (
 	"API_Gateway/builder"
 	"API_Gateway/connector"
 	"API_Gateway/handler"
-	"fmt"
+	"log"
 )
 
 func main() {
@@ -14,10 +14,14 @@ func main() {
 	// 初始化
 	bk := backend.NewBManager(table.Backend)
 	hdl := handler.NewHandler(table.Handler, bk.Call)
-	lst := connector.NewListener(table.Connector, hdl.HandleHTTPConn)
-	// 主流程启动
-	err := lst.Connect()
+	lst, err := connector.NewListener(table.Connector, hdl.HandleHTTPConn)
 	if err != nil {
-		fmt.Printf("[main]failed to start service, err message: %s", err)
+		log.Printf("[main]failed to new listener, errmsg: %s", err.Error())
+		return
+	}
+	// 主流程启动
+	err = lst.Connect()
+	if err != nil {
+		log.Printf("[main]failed to start service, errmsg: %s", err.Error())
 	}
 }

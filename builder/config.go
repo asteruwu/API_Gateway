@@ -8,8 +8,13 @@ type Config struct {
 
 type ConnectorConfig struct {
 	// 监听端口
-	// 连接数限流 policy
-	Port string
+	Port    string
+	Filters []any
+}
+
+type TCPLimiterFilterConfig struct {
+	Enable  bool
+	MaxConn int
 }
 
 type HandlerConfig struct {
