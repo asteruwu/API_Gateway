@@ -3,6 +3,8 @@ package handler
 import (
 	"API_Gateway/builder"
 	"API_Gateway/handler/message"
+	"io"
+	"net/http"
 )
 
 type Decoder struct {
@@ -13,8 +15,13 @@ func NewDecoder(cfg builder.DecoderConfig) *Decoder {
 	return &Decoder{}
 }
 
-func (d *Decoder) Decode(raw []byte) (message.Request, error) {
+func (d *Decoder) Decode(req *http.Request) (message.Request, error) {
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return message.Request{}, err
+	}
 	return message.Request{
-		Raw: raw,
+		Raw:   body,
+		Proto: req.Proto,
 	}, nil
 }

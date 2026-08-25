@@ -11,3 +11,9 @@ type Request struct {
 type Response struct {
 	Raw []byte
 }
+
+func ErrorResponse(err error) *Response {
+	return &Response{
+		Raw: []byte{},
+	}
+}

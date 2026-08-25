@@ -6,6 +6,7 @@ import (
 	"API_Gateway/connector"
 	"API_Gateway/handler"
 	"API_Gateway/testbed/fakebackend"
+	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -47,11 +48,13 @@ func startGateway(t *testing.T, cfg *builder.Config) {
 	time.Sleep(100 * time.Millisecond)
 }
 
-// echoViaHalfClose 向 conn 写入 want 并 half-close，读回响应。
-// 被网关拒绝的连接：写入后连接已被关闭，读到空响应。
+// echoViaHalfClose 向 conn 发送一个携带 want 作为请求体的合法 HTTP 请求，
+// 然后 half-close（网关 handler 因此读到 EOF 结束本次连接生命周期），读回响应。
 func echoViaHalfClose(t *testing.T, conn net.Conn, want []byte) []byte {
 	t.Helper()
-	if _, err := conn.Write(want); err != nil {
+	req := fmt.Sprintf("POST / HTTP/1.1\r\nHost: gateway\r\nContent-Length: %d\r\n\r\n%s",
+		len(want), want)
+	if _, err := conn.Write([]byte(req)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
