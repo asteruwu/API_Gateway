@@ -3,6 +3,7 @@ package connector
 import (
 	"API_Gateway/builder"
 	tcpfilter "API_Gateway/connector/tcp_filter"
+	gconst "API_Gateway/pkg/constant"
 	gerrors "API_Gateway/pkg/errors"
 	"errors"
 	"fmt"
@@ -21,12 +22,10 @@ type Listener struct {
 	next     func(net.Conn) error
 }
 
-const defaultListenerPort = "6666"
-
 func NewListener(cfg builder.ConnectorConfig, next func(net.Conn) error) (*Listener, error) {
 	var port string
 	if cfg.Port == "" {
-		port = defaultListenerPort
+		port = gconst.DefaultConnectorListenerPort
 	} else {
 		port = cfg.Port
 	}
@@ -59,7 +58,10 @@ func (l *Listener) Process(conn net.Conn) {
 		}
 	}
 	fmt.Println("[connector]pass connection to handler")
-	l.next(conn)
+	err := l.next(conn)
+	if err != nil {
+		return
+	}
 }
 
 func (l *Listener) Connect() error {

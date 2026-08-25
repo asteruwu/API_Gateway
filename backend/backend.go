@@ -12,8 +12,6 @@ type BManager struct {
 	service map[string]*Service
 }
 
-const defaultReadBufferSize = 4096
-
 func NewBManager(cfg builder.BackendConfig) *BManager {
 	svc := cfg.Service
 	svcMap := make(map[string]*Service)
