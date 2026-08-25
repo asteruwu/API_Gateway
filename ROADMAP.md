@@ -38,7 +38,11 @@
 
 ### 当前状态
 
-**端到端链路已打通（v00-v02 已完成）。** 全部包和接口已就位，`go build ./...`、`go vet ./...`、`go test ./...` 全部通过，集成 testbed 已验证「客户端 → 网关 → 后端 → 客户端」能返回 echo 数据。当前各模块仍是假实现（decoder/filter/transformer/encoder 只是透传原始字节），但数据流已经闭合：从 `net.Conn` 进、经完整链路到后端、再原路返回写回 conn，每一环的入参出参都对得上，后续是在真实协议和健壮性上往里填肉。
+**端到端链路已打通，连接层已填实（v00-v03 已完成）。** 全部包和接口已就位，`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`），连接级限流已落地并有单元测试 + testbed 多连接并发用例覆盖。
+
+相对 v02 的关键变化：handler 已从「裸字节透传」升级为「`http.ReadRequest` 真实解析请求行 + header」，decoder 把请求体读到 `message.Request.Raw`；`HandleHTTPConn` 补了 keep-alive 退出判断（EOF 返回、错误分类 `closeConnOrNot` 决定断连还是写回）；新建 `pkg/errors`（gerrors 哨兵错误，按模块分域）与 `pkg/constant`（gconst 共享常数）；tcp_filter 编排能力落地（配置驱动 + 准入失败直接关连接）。testbed 客户端已升格为真实 HTTP 协议。
+
+仍保留的边界（照旧）：decoder 只做「字节 → 网关模型」的最小搬运，Method/URL/Header 等结构化字段映射放在 v04；encoder/filter/transformer 仍是假实现（透传）。
 
 **接手前请务必先读「架构约定」一节**——那 9 条是反复讨论后定下的边界（模块间怎么解耦、协议知识关在哪、连接池归谁、响应从哪出去），从代码本身看不出来，但改动时必须遵守。「已知待办」记录了已识别但尚未处理的问题，不必当成 bug 重复上报。
 
@@ -72,7 +76,7 @@
 
 ## 当前进度
 
-> 最后更新：2026-08-16　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过
+> 最后更新：2026-08-25　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
 
 - [x] **v00 项目初始化** —— 完成，数据流已闭合
   - [x] `main.go`：按逆序完成编排（backend → handler → connector）
@@ -92,7 +96,11 @@
   - [x] `handler.Process` 跑通主流程骨架：decode → filters（假实现）→ transform → next(Call) → restore → encode
   - [x] decoder / encoder / filter / transformer 全部假实现，完整链路能返回数据
   - [x] 搭建集成 testbed（`testbed/e2e_test.go` + `fakebackend`），验证「客户端 → 网关 → 后端 → 客户端」端到端返回 echo 数据
-- [ ] v03 连接层填实
+- [x] **v03 连接层填实** —— 完成，连接级限流 + 字节流健壮性落地
+  - [x] 通用错误包 `pkg/errors`（gerrors）：哨兵错误按 connector/handler/backend 分域，纯 `error` 可直接返回；配套 `pkg/constant`（gconst）定义共享常数（监听端口、读缓冲、读超时、后端缓冲）
+  - [x] tcp_filter 落地：`LimitFilter`（原子计数 + 上限判断 + 超限回滚计数 + `OnCloseConn` 归还）；`Listener.Process` 按配置顺序编排 filters，准入失败直接 return、由 `defer conn.Close()` 统一收尾；`NewListener` 从 `ConnectorConfig.Filters` 读取，`BuildTCPFilters` 支持 `Enable` 开关
+  - [x] 字节流健壮性：`Handler.Process` 改用 `http.ReadRequest`（半包/粘包由标准库接管），decoder 读请求体到 `Raw`；`HandleHTTPConn` 补 keep-alive 退出判断 + 错误分类（`closeConnOrNot`：EOF / `net.ErrClosed` / 超时 / `*net.OpError` 穿透 syscall），连接层错误直接断连，业务错误转 `message.ErrorResponse(err)` 写回后继续循环
+  - [x] 测试：`limit_filter_test.go` 三个单元测试 + testbed 升级为真实 HTTP 协议、新增 `TestEchoConcurrentLimit` 多连接并发用例，全部通过（含 `-race`）
 - [ ] v04 请求解析
 - [ ] v05 路由能力
 - [ ] v06 连接抽象
@@ -121,8 +129,10 @@ conn → Decode → message.Request → filters
 
 ## 已知待办（不影响结构，填肉时处理）
 
-- `HandleHTTPConn`：错误路径需转成 `message.ErrorResponse(err)` 写回，而不是直接 `return err`
-- `HandleHTTPConn`：`for` 循环缺 keep-alive 退出判断（目前仅以 EOF/err 结束生命周期）
+- ~~`HandleHTTPConn`：错误路径需转成 `message.ErrorResponse(err)` 写回，而不是直接 `return err`~~ —— 已解决（v03 已写回 + `closeConnOrNot` 分类断连/写回）
+- ~~`HandleHTTPConn`：`for` 循环缺 keep-alive 退出判断（目前仅以 EOF/err 结束生命周期）~~ —— 已解决（v03 已补 EOF 退出 + 错误分类）
+- `message.ErrorResponse`：目前返回空响应（`Raw: []byte{}`），需产出合法 HTTP 错误响应（如 `HTTP/1.1 500` + err.Error() 或状态码区分）—— 与 v10「错误处理统一」相关
+- 待办样板：`Decoder` 结构化映射（Method/URL/Header）留 v04；testbed 响应侧仍按透传读回，v04 编码器产出 HTTP 响应时客户端需升格 `http.ReadResponse`
 - ~~`conn.Write` 返回值未检查~~ —— 已解决（v02 已检查返回值）
 - ~~`Decode` 缺 error 返回~~ —— 已解决（v02 骨架已带 error 返回）
 - ~~`builder` 的 `HandlerConfig.filter/transformer`、`BackendConfig.service` 仍是小写~~ —— 已解决（字段已全部导出，配置可反序列化）
@@ -135,19 +145,16 @@ conn → Decode → message.Request → filters
 - 假后端协议和 transformer 绑定演进：现阶段裸字节 echo（half-close 定界），v06 起挂 gRPC handler（协议帧定界）。
 - 行为模式先做 `echo` + `fixed`，`error`/`delay` 等做到重试/熔断（v03/v06）时再加。
 
-## 下一步（v03 连接层填实）
+## 下一步（v04 请求解析）
 
-0. 通用错误包落地
-   1. 新建通用错误包（如 `errs/`），按模块定义各自约定好的错误
-   2. 全部错误实例为 `error` 类型，可直接作为函数返回值，不引入额外包装类型
-   3. 按模块划分错误域：connector（监听/Accept/连接准入）、handler（解码/编码/filter/transformer）、backend（服务查找/转发/连接池）
-   4. 与 v03 的「错误路径转 `message.ErrorResponse(err)` 写回」配套：错误从各层原样返回，外层统一识别转换，语义不丢
-1. tcp_filter 落地
-   1. 连接数限流 filter 实现（原子计数 + 上限判断）
-   2. `Listener.Process` 编排 filters：先跑连接级准入，失败直接拒绝并关闭 conn
-   3. `NewListener` 从 `ConnectorConfig` 读取限流配置
-2. 字节流处理健壮性（为 v04 `http.ReadRequest` 打基础）
-   1. `Handler.Process` 去掉 `io.ReadAll`，改用 `bufio.Reader` 按帧读取
-   2. 处理半包 / 粘包 / 空读 / 异常关闭
-   3. `HandleHTTPConn` 补 keep-alive 退出判断，错误路径转 `message.ErrorResponse(err)` 写回
-3. 测试：tcp_filter 限流单元测试 + testbed 增加多连接并发用例
+v03 已把 `http.ReadRequest` 引入 handler（请求行 + header 解析由标准库完成），v04 重点在 decoder 真正产出结构化请求：
+
+1. `message.Request` 扩结构化字段，补齐映射
+   1. 扩展 `handler/message`：在 `Raw`/`Proto` 基础上加 `Method`、`URL`、`Header`、`Host` 等字段（保持叶子包，零依赖）
+   2. `Decoder.Decode` 从 `*http.Request` 映射上述字段，替换现在的「只透传 body」
+   3. 处理请求体读取边界（`ContentLength` 校验、`req.Body` 读完的复用问题）
+2. keep-alive 判定接入解码结果
+   1. 基于 `req.Close` / `http.Request` 的 keep-alive 头，在 `HandleHTTPConn` 正确处理 `Connection: close`（请求头）、HTTP/1.0 语义、超时回收
+3. 测试
+   1. decoder 结构化映射单元测试（method/url/header 各字段）
+   2. testbed 增加 keep-alive 连续多请求用例（同一条连接发多个请求）
