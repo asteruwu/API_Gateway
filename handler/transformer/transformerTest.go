@@ -7,7 +7,7 @@ type TestTransformer struct {
 }
 
 func (t *TestTransformer) Transform(req *message.Request) ([]byte, error) {
-	return req.Raw, nil
+	return req.Body, nil
 }
 
 func (t *TestTransformer) Restore(resp []byte) (*message.Response, error) {

@@ -34,6 +34,8 @@ var (
 	// ErrDecodeRequest 请求解码失败
 	ErrDecodeRequest = errors.New("handler: decode request failed")
 
+	ErrBodyTooLarge = errors.New("handler: request too large")
+
 	// ErrEncodeResponse 响应编码失败
 	ErrEncodeResponse = errors.New("handler: encode response failed")
 
