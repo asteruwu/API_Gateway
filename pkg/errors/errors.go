@@ -31,6 +31,9 @@ var (
 
 // handler errors
 var (
+	// ErrReadRequest 读取/解析 HTTP 请求失败
+	ErrReadRequest = errors.New("handler: read request failed")
+
 	// ErrDecodeRequest 请求解码失败
 	ErrDecodeRequest = errors.New("handler: decode request failed")
 
@@ -50,6 +53,9 @@ var (
 
 	// ErrEmptyRequest 读到空请求
 	ErrEmptyRequest = errors.New("handler: empty request")
+
+	// ErrHandleProcessResponse 响应处理失败
+	ErrHandleProcessResponse = errors.New("handler: handle process response failed")
 )
 
 // backend errors

@@ -26,6 +26,7 @@ type HandlerConfig struct {
 
 type DecoderConfig struct {
 	// 解析器配置
+	MaxBody int64
 }
 
 type EncoderConfig struct {
