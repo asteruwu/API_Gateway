@@ -3,6 +3,7 @@ package handler
 import (
 	"API_Gateway/builder"
 	"API_Gateway/handler/message"
+	gconst "API_Gateway/pkg/constant"
 	gerrors "API_Gateway/pkg/errors"
 	"io"
 	"net/http"
@@ -14,7 +15,13 @@ type Decoder struct {
 }
 
 func NewDecoder(cfg builder.DecoderConfig) *Decoder {
-	return &Decoder{}
+	max := cfg.MaxBody
+	if max <= 0 {
+		max = gconst.DefaultHandlerBodySize
+	}
+	return &Decoder{
+		maxBody: max,
+	}
 }
 
 func (d *Decoder) Decode(req *http.Request) (message.Request, error) {
@@ -38,7 +45,7 @@ func (d *Decoder) Decode(req *http.Request) (message.Request, error) {
 	}
 
 	return message.Request{
-		Header:        req.Header,
+		Header:        req.Header.Clone(),
 		Body:          body,
 		Method:        req.Method,
 		Proto:         req.Proto,
