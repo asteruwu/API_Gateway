@@ -6,8 +6,10 @@ import (
 	"API_Gateway/handler/message"
 	"API_Gateway/handler/transformer"
 	gconst "API_Gateway/pkg/constant"
+	gerrors "API_Gateway/pkg/errors"
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -31,6 +33,7 @@ type HTTPHandler struct {
 type ConnHandler struct {
 	conn   net.Conn
 	reader *bufio.Reader
+	close  bool
 }
 
 func NewHandler(cfg builder.HandlerConfig, next func(service string, payload []byte) ([]byte, error)) *HTTPHandler {
@@ -48,24 +51,29 @@ func NewHandler(cfg builder.HandlerConfig, next func(service string, payload []b
 	}
 }
 
-func (h *HTTPHandler) Process(ch ConnHandler) (*message.Response, error) {
+func (h *HTTPHandler) Process(ch *ConnHandler) (*message.Response, error) {
 	buf, err := http.ReadRequest(ch.reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", gerrors.ErrReadRequest, err)
 	}
 	// TODO
+	// 0. 连接判断
+	if buf.Close {
+		ch.close = true
+	}
 	// 1. 解析
 	msgReq, err := h.decoder.Decode(buf)
 	if err != nil {
 		return nil, err
 	}
+	msgReq.RemoteAddr = ch.conn.RemoteAddr().String()
 	// 2. filter 编排
 	filter_0 := h.filters["testF"]
 	msgResp, err := filter_0.HandleHTTPFilt(&msgReq)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[handler]pass filter, response: %v", msgResp.Raw)
+	log.Printf("[handler]pass filter, response: %v", msgResp.Body)
 	// 3. 协议转换
 	transformer_0 := h.transformers["testT"]
 	tResp, err := transformer_0.Transform(&msgReq)
@@ -87,31 +95,16 @@ func (h *HTTPHandler) HandleHTTPConn(conn net.Conn) error {
 	ch := buildConnHandler(conn)
 	for {
 		ch.conn.SetReadDeadline(time.Now().Add(gconst.DefaultHandlerReadTimeout))
-		msg, err := h.Process(ch)
+		msg, err := h.Process(&ch)
 		if err != nil {
-			// TODO
-			log.Printf("[handler]failed to handle connection, err message: %s", err.Error())
-			if shouldClose := closeConnOrNot(err); shouldClose {
-				log.Printf("[handler]close conn, err message: %s", err.Error())
+			log.Printf("[handler]failed to process, err message: %s", err.Error())
+			if closeConnOrNot(err) {
 				return err
 			}
-			log.Println("[handler]writing response to connection...")
-			res, err := h.encoder.Encode(message.ErrorResponse(err))
-			if err == nil {
-				_, err = ch.conn.Write(res)
-			} else {
-				log.Printf("[handler]failed to write response to connection, err message: %s", err.Error())
-			}
-			continue
+			msg = ErrorResponse(err)
 		}
-		res, err := h.encoder.Encode(msg)
-		if err != nil {
-			// TODO
-			return err
-		}
-		log.Println("[handler]writing response to connection")
-		_, err = ch.conn.Write(res)
-		if err != nil {
+		if err := h.handleProcessResponse(msg, &ch); err != nil || ch.close {
+			log.Println("[handler]handler ended")
 			return err
 		}
 	}
@@ -139,7 +132,22 @@ func buildConnHandler(conn net.Conn) ConnHandler {
 	return ConnHandler{
 		conn:   conn,
 		reader: bufio.NewReader(conn),
+		close:  false,
 	}
+}
+
+func (h *HTTPHandler) handleProcessResponse(msg *message.Response, ch *ConnHandler) error {
+	if msg == nil {
+		return nil
+	}
+
+	res, errE := h.encoder.Encode(msg)
+	_, errW := ch.conn.Write(res)
+
+	if shouldClose := closeConnOrNot(errE) || closeConnOrNot(errW); shouldClose {
+		return gerrors.ErrHandleProcessResponse
+	}
+	return nil
 }
 
 func closeConnOrNot(err error) bool {
@@ -149,6 +157,12 @@ func closeConnOrNot(err error) bool {
 	if errors.Is(err, os.ErrDeadlineExceeded) {
 		return true
 	}
+	if errors.Is(err, gerrors.ErrDecodeRequest) ||
+		errors.Is(err, gerrors.ErrBodyTooLarge) ||
+		errors.Is(err, gerrors.ErrReadRequest) {
+		return true
+	}
+
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
 		switch {
@@ -159,4 +173,37 @@ func closeConnOrNot(err error) bool {
 		}
 	}
 	return false
+}
+
+func ErrorResponse(err error) *message.Response {
+	status := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, gerrors.ErrBodyTooLarge):
+		status = http.StatusRequestEntityTooLarge // 413
+	case errors.Is(err, gerrors.ErrDecodeRequest),
+		errors.Is(err, gerrors.ErrEmptyRequest):
+		status = http.StatusBadRequest // 400
+	case errors.Is(err, gerrors.ErrHTTPFilterReject):
+		status = http.StatusForbidden // 403
+	case errors.Is(err, gerrors.ErrServiceNotFound),
+		errors.Is(err, gerrors.ErrNoInstance),
+		errors.Is(err, gerrors.ErrDialFailed):
+		status = http.StatusBadGateway // 502
+	}
+
+	reason := http.StatusText(status)
+	body := []byte(reason)
+	if err != nil {
+		body = []byte(err.Error())
+	}
+
+	return &message.Response{
+		Header: http.Header{
+			"Content-Type": []string{gconst.DefaultErrorContentType},
+		},
+		Body:          body,
+		StatusCode:    status,
+		Proto:         gconst.DefaultHTTPProto,
+		ContentLength: int64(len(body)),
+	}
 }

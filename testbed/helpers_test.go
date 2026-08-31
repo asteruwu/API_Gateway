@@ -6,9 +6,11 @@ import (
 	"API_Gateway/connector"
 	"API_Gateway/handler"
 	"API_Gateway/testbed/fakebackend"
+	"bufio"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -60,9 +62,15 @@ func echoViaHalfClose(t *testing.T, conn net.Conn, want []byte) []byte {
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		_ = tcpConn.CloseWrite()
 	}
-	got, err := io.ReadAll(conn)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
 		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
 	}
 	return got
 }

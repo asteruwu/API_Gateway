@@ -21,11 +21,9 @@ type Request struct {
 }
 
 type Response struct {
-	Raw []byte
-}
-
-func ErrorResponse(err error) *Response {
-	return &Response{
-		Raw: []byte{},
-	}
+	Header        http.Header
+	Body          []byte
+	StatusCode    int
+	Proto         string
+	ContentLength int64
 }

@@ -12,6 +12,6 @@ func (t *TestTransformer) Transform(req *message.Request) ([]byte, error) {
 
 func (t *TestTransformer) Restore(resp []byte) (*message.Response, error) {
 	return &message.Response{
-		Raw: resp,
+		Body: resp,
 	}, nil
 }

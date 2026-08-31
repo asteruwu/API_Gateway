@@ -8,6 +8,6 @@ type TestFilter struct {
 
 func (t *TestFilter) HandleHTTPFilt(req *message.Request) (*message.Response, error) {
 	return &message.Response{
-		Raw: req.Body,
+		Body: req.Body,
 	}, nil
 }
