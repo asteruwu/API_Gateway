@@ -38,11 +38,11 @@
 
 ### 当前状态
 
-**端到端链路已打通，连接层已填实（v00-v03 已完成）。** 全部包和接口已就位，`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`），连接级限流已落地并有单元测试 + testbed 多连接并发用例覆盖。
+**端到端链路已打通，连接层与请求解析已填实（v00-v04 已完成）。** 全部包和接口已就位，`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）。
 
-相对 v02 的关键变化：handler 已从「裸字节透传」升级为「`http.ReadRequest` 真实解析请求行 + header」，decoder 把请求体读到 `message.Request.Raw`；`HandleHTTPConn` 补了 keep-alive 退出判断（EOF 返回、错误分类 `closeConnOrNot` 决定断连还是写回）；新建 `pkg/errors`（gerrors 哨兵错误，按模块分域）与 `pkg/constant`（gconst 共享常数）；tcp_filter 编排能力落地（配置驱动 + 准入失败直接关连接）。testbed 客户端已升格为真实 HTTP 协议。
+相对 v03 的关键变化：`message.Request` 结构化（Method/URL/Header/Host/Proto/ContentLength/Body），`Decoder.Decode` 从 `*http.Request` 完整映射并处理 body 边界（`ContentLength` 预检 + `LimitReader` 双重限制，chunked、体长与声明不符、超限各有明确哨兵错误）；encoder 升格为真实 HTTP 响应帧（状态行 + headers，Content-Length 由编码器统一计算），`ErrorResponse` 按错误域映射状态码（413/400/403/502）且 `message` 保持零依赖叶子包；keep-alive 接入解码结果（`req.Close` → `ch.close`，覆盖 `Connection: close` 与 HTTP/1.0 语义），同一条连接可连续处理多个请求。
 
-仍保留的边界（照旧）：decoder 只做「字节 → 网关模型」的最小搬运，Method/URL/Header 等结构化字段映射放在 v04；encoder/filter/transformer 仍是假实现（透传）。
+仍保留的边界（照旧）：filter/transformer 仍是假实现（透传）；路由仍是 `Process` 里硬编码的 `"testBackend"`，v05 落地配置驱动路由。
 
 **接手前请务必先读「架构约定」一节**——那 9 条是反复讨论后定下的边界（模块间怎么解耦、协议知识关在哪、连接池归谁、响应从哪出去），从代码本身看不出来，但改动时必须遵守。「已知待办」记录了已识别但尚未处理的问题，不必当成 bug 重复上报。
 
@@ -76,7 +76,7 @@
 
 ## 当前进度
 
-> 最后更新：2026-08-25　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
+> 最后更新：2026-08-31　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
 
 - [x] **v00 项目初始化** —— 完成，数据流已闭合
   - [x] `main.go`：按逆序完成编排（backend → handler → connector）
@@ -101,7 +101,12 @@
   - [x] tcp_filter 落地：`LimitFilter`（原子计数 + 上限判断 + 超限回滚计数 + `OnCloseConn` 归还）；`Listener.Process` 按配置顺序编排 filters，准入失败直接 return、由 `defer conn.Close()` 统一收尾；`NewListener` 从 `ConnectorConfig.Filters` 读取，`BuildTCPFilters` 支持 `Enable` 开关
   - [x] 字节流健壮性：`Handler.Process` 改用 `http.ReadRequest`（半包/粘包由标准库接管），decoder 读请求体到 `Raw`；`HandleHTTPConn` 补 keep-alive 退出判断 + 错误分类（`closeConnOrNot`：EOF / `net.ErrClosed` / 超时 / `*net.OpError` 穿透 syscall），连接层错误直接断连，业务错误转 `message.ErrorResponse(err)` 写回后继续循环
   - [x] 测试：`limit_filter_test.go` 三个单元测试 + testbed 升级为真实 HTTP 协议、新增 `TestEchoConcurrentLimit` 多连接并发用例，全部通过（含 `-race`）
-- [ ] v04 请求解析
+- [x] **v04 请求解析** —— 完成，decoder 产出结构化请求 + keep-alive 落地
+  - [x] `message.Request` 结构化：新增 `Method/URL/Header/Host/ContentLength/Body`（`Proto` 保留），叶子包零依赖；`Response` 同步结构化（StatusCode/Header/Body/Proto/ContentLength）
+  - [x] `Decoder.Decode` 从 `*http.Request` 完整映射；body 边界：`ContentLength` 预检 + `LimitReader(maxBody+1)` 双重限制（chunked `ContentLength=-1` 也能拦截）、读失败转 `ErrDecodeRequest`、入口 `defer req.Body.Close()`
+  - [x] encoder 真实编码：状态行 + headers + Content-Length（由编码器统一计算）；`ErrorResponse` 按错误域映射状态码（413/400/403/502），`message` 保持零依赖
+  - [x] keep-alive：`req.Close` → `ch.close`（覆盖 `Connection: close` 与 HTTP/1.0 默认短连接），同一条连接连续处理多请求
+  - [x] 测试：`decoder_test.go` 八个单元测试（字段映射、body 临界值、chunked 超限、体长不符、默认 maxBody、无 body）+ testbed 新增 `TestEchoKeepAlive`（同连接 3 个请求 + `Connection: close` 后 EOF），全部通过（含 `-race`）
 - [ ] v05 路由能力
 - [ ] v06 连接抽象
 - [ ] v07 安全认证
@@ -131,8 +136,10 @@ conn → Decode → message.Request → filters
 
 - ~~`HandleHTTPConn`：错误路径需转成 `message.ErrorResponse(err)` 写回，而不是直接 `return err`~~ —— 已解决（v03 已写回 + `closeConnOrNot` 分类断连/写回）
 - ~~`HandleHTTPConn`：`for` 循环缺 keep-alive 退出判断（目前仅以 EOF/err 结束生命周期）~~ —— 已解决（v03 已补 EOF 退出 + 错误分类）
-- `message.ErrorResponse`：目前返回空响应（`Raw: []byte{}`），需产出合法 HTTP 错误响应（如 `HTTP/1.1 500` + err.Error() 或状态码区分）—— 与 v10「错误处理统一」相关
-- 待办样板：`Decoder` 结构化映射（Method/URL/Header）留 v04；testbed 响应侧仍按透传读回，v04 编码器产出 HTTP 响应时客户端需升格 `http.ReadResponse`
+- ~~`message.ErrorResponse`：目前返回空响应~~ —— 已解决（v04 已产出合法 HTTP 响应，按错误域映射 413/400/403/502；错误处理统一仍留 v10 走查）
+- ~~testbed 响应侧仍按透传读回、客户端需升格 `http.ReadResponse`~~ —— 已解决（v04 编码器产出真实响应帧后已升格）
+- `ErrBodyTooLarge`：目前归入「边界不可信错误」直接断连、不写 413；若后续想给客户端明确反馈，可在断连前写一次 413 —— 与 v10「错误处理统一」相关
+- filter 短路响应路径（filter 拒绝时直接产出响应写回、跳过后续链路）留 v07/v08 落地；编码失败（`errE`）时的断连策略留 v10 走查
 - ~~`conn.Write` 返回值未检查~~ —— 已解决（v02 已检查返回值）
 - ~~`Decode` 缺 error 返回~~ —— 已解决（v02 骨架已带 error 返回）
 - ~~`builder` 的 `HandlerConfig.filter/transformer`、`BackendConfig.service` 仍是小写~~ —— 已解决（字段已全部导出，配置可反序列化）
@@ -145,16 +152,16 @@ conn → Decode → message.Request → filters
 - 假后端协议和 transformer 绑定演进：现阶段裸字节 echo（half-close 定界），v06 起挂 gRPC handler（协议帧定界）。
 - 行为模式先做 `echo` + `fixed`，`error`/`delay` 等做到重试/熔断（v03/v06）时再加。
 
-## 下一步（v04 请求解析）
+## 下一步（v05 路由能力）
 
-v03 已把 `http.ReadRequest` 引入 handler（请求行 + header 解析由标准库完成），v04 重点在 decoder 真正产出结构化请求：
+v04 已让 decoder 产出结构化请求、encoder 产出真实 HTTP 响应，v05 重点在路由从硬编码走向配置驱动：
 
-1. `message.Request` 扩结构化字段，补齐映射
-   1. 扩展 `handler/message`：在 `Raw`/`Proto` 基础上加 `Method`、`URL`、`Header`、`Host` 等字段（保持叶子包，零依赖）
-   2. `Decoder.Decode` 从 `*http.Request` 映射上述字段，替换现在的「只透传 body」
-   3. 处理请求体读取边界（`ContentLength` 校验、`req.Body` 读完的复用问题）
-2. keep-alive 判定接入解码结果
-   1. 基于 `req.Close` / `http.Request` 的 keep-alive 头，在 `HandleHTTPConn` 正确处理 `Connection: close`（请求头）、HTTP/1.0 语义、超时回收
+1. router 真实实现
+   1. `handler/http_filter/` 落地 Router：按请求 Method + URL Path 匹配路由规则，产出目标 service 名，替换 `Process` 里硬编码的 `"testBackend"`
+   2. 定好路由结果如何流入主流程：现在 `HTTPFilter.HandleHTTPFilt` 只返回 `(*message.Response, error)`，需要定「filter 如何把 service 名交给 `next`」（扩接口 / `message.Request` 挂路由结果 / 编排层显式串联），开工前先定案
+   3. 路由规则配置化：`builder` 扩展路由配置（规则列表：路径/方法 → service），`main.go` 链路打通配置 → router；匹配语义先做精确/前缀，不上正则
+2. 未命中路由的错误路径
+   1. 新增 `gerrors.ErrRouteNotFound`，`ErrorResponse` 映射 404（业务错误，写回后 keep-alive 继续）
 3. 测试
-   1. decoder 结构化映射单元测试（method/url/header 各字段）
-   2. testbed 增加 keep-alive 连续多请求用例（同一条连接发多个请求）
+   1. router 匹配单元测试（命中 / 未命中 / 多规则）
+   2. testbed 配置两条路由指向不同假后端，验证按路径转发
