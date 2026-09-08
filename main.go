@@ -13,12 +13,19 @@ func main() {
 	table := builder.Build()
 	// 初始化
 	bk := backend.NewBManager(table.Backend)
-	hdl := handler.NewHandler(table.Handler, bk.Call)
+
+	hdl, err := handler.NewHandler(table.Handler, bk.Call)
+	if err != nil {
+		log.Printf("[main]failed to new handler, errmsg: %s", err.Error())
+		return
+	}
+
 	lst, err := connector.NewListener(table.Connector, hdl.HandleHTTPConn)
 	if err != nil {
 		log.Printf("[main]failed to new listener, errmsg: %s", err.Error())
 		return
 	}
+
 	// 主流程启动
 	err = lst.Connect()
 	if err != nil {

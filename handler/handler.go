@@ -25,7 +25,7 @@ import (
 type HTTPHandler struct {
 	decoder      *Decoder
 	encoder      *Encoder
-	filters      map[string]hf.HTTPFilter
+	filters      []hf.HTTPFilter
 	transformers map[string]transformer.Transformer
 	next         func(service string, payload []byte) ([]byte, error)
 }
@@ -36,11 +36,14 @@ type ConnHandler struct {
 	close  bool
 }
 
-func NewHandler(cfg builder.HandlerConfig, next func(service string, payload []byte) ([]byte, error)) *HTTPHandler {
+func NewHandler(cfg builder.HandlerConfig, next func(service string, payload []byte) ([]byte, error)) (*HTTPHandler, error) {
 	decoder := NewDecoder(cfg.Decoder)
 	encoder := NewEncoder(cfg.Encoder)
 	// 初始化 filters 和 transformer
-	filters := buildFilter(cfg.Filter)
+	filters, err := buildFilter(cfg.Filter.Filters)
+	if err != nil {
+		return nil, err
+	}
 	transformers := buildTransformer(cfg.Transformer)
 	return &HTTPHandler{
 		decoder:      decoder,
@@ -48,7 +51,7 @@ func NewHandler(cfg builder.HandlerConfig, next func(service string, payload []b
 		filters:      filters,
 		transformers: transformers,
 		next:         next,
-	}
+	}, nil
 }
 
 func (h *HTTPHandler) Process(ch *ConnHandler) (*message.Response, error) {
@@ -68,12 +71,14 @@ func (h *HTTPHandler) Process(ch *ConnHandler) (*message.Response, error) {
 	}
 	msgReq.RemoteAddr = ch.conn.RemoteAddr().String()
 	// 2. filter 编排
-	filter_0 := h.filters["testF"]
-	msgResp, err := filter_0.HandleHTTPFilt(&msgReq)
-	if err != nil {
-		return nil, err
+	for _, f := range h.filters {
+		if _, err := f.HandleHTTPFilt(&msgReq); err != nil {
+			return nil, err
+		}
 	}
-	log.Printf("[handler]pass filter, response: %v", msgResp.Body)
+	if msgReq.Service == "" {
+		return nil, gerrors.ErrServiceNotFound
+	}
 	// 3. 协议转换
 	transformer_0 := h.transformers["testT"]
 	tResp, err := transformer_0.Transform(&msgReq)
@@ -82,7 +87,7 @@ func (h *HTTPHandler) Process(ch *ConnHandler) (*message.Response, error) {
 	}
 	// 4. next 调用
 	log.Println("[handler]pass message to backend")
-	resp, err := h.next("testBackend", tResp)
+	resp, err := h.next(msgReq.Service, tResp)
 	if err != nil {
 		return nil, err
 	}
@@ -110,13 +115,25 @@ func (h *HTTPHandler) HandleHTTPConn(conn net.Conn) error {
 	}
 }
 
-func buildFilter(cfg builder.HTTPFilterConfig) map[string]hf.HTTPFilter {
-	fMap := make(map[string]hf.HTTPFilter)
-	f := hf.TestFilter{
-		Name: "testF",
+func buildFilter(cfgs []any) ([]hf.HTTPFilter, error) {
+	filters := []hf.HTTPFilter{}
+
+	for i, cfg := range cfgs {
+		switch filter := cfg.(type) {
+		case builder.RouterConfig:
+			router, err := hf.NewRouter(filter)
+			if err != nil {
+				return nil, err
+			}
+			filters = append(filters, router)
+		default:
+			log.Printf("[handler]failed to initialize http filter %d, unsupported config type %T", i, cfg)
+			return nil, gerrors.ErrInitializeHTTPFiltersFailed
+		}
 	}
-	fMap[f.Name] = &f
-	return fMap
+	filters = append(filters, &hf.TestFilter{Name: "testF"})
+
+	return filters, nil
 }
 
 func buildTransformer(cfg builder.TransformerConfig) map[string]transformer.Transformer {
@@ -185,6 +202,8 @@ func ErrorResponse(err error) *message.Response {
 		status = http.StatusBadRequest // 400
 	case errors.Is(err, gerrors.ErrHTTPFilterReject):
 		status = http.StatusForbidden // 403
+	case errors.Is(err, gerrors.ErrRouteNotFound):
+		status = http.StatusNotFound // 404
 	case errors.Is(err, gerrors.ErrServiceNotFound),
 		errors.Is(err, gerrors.ErrNoInstance),
 		errors.Is(err, gerrors.ErrDialFailed):

@@ -44,11 +44,12 @@ func TestEchoKeepAlive(t *testing.T) {
 
 	cfg := &builder.Config{
 		Connector: builder.ConnectorConfig{Port: "9997"},
-		Backend: builder.BackendConfig{
-			Service: []builder.ServiceConfig{
-				{Name: "testBackend", Instances: []builder.InstanceConfig{{Addr: backendAddr}}},
+		Handler: builder.HandlerConfig{
+			Filter: builder.HTTPFilterConfig{
+				Filters: []any{routerConfig(map[string][]string{"testBackend": {"/"}})},
 			},
 		},
+		Backend: backendConfig(map[string][]string{"testBackend": {backendAddr}}),
 	}
 	startGateway(t, cfg)
 

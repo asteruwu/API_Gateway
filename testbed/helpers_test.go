@@ -35,7 +35,10 @@ func startEchoBackend(t *testing.T) string {
 func startGateway(t *testing.T, cfg *builder.Config) {
 	t.Helper()
 	bm := backend.NewBManager(cfg.Backend)
-	hdl := handler.NewHandler(cfg.Handler, bm.Call)
+	hdl, err := handler.NewHandler(cfg.Handler, bm.Call)
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
 	lst, err := connector.NewListener(cfg.Connector, hdl.HandleHTTPConn)
 	if err != nil {
 		t.Fatalf("build listener: %v", err)
@@ -73,4 +76,33 @@ func echoViaHalfClose(t *testing.T, conn net.Conn, want []byte) []byte {
 		t.Fatalf("read response body: %v", err)
 	}
 	return got
+}
+
+// routerConfig 按「服务名 → 路径前缀列表」构造路由 filter 配置
+func routerConfig(rules map[string][]string) builder.RouterConfig {
+	groups := make([]builder.RouteServiceConfig, 0, len(rules))
+	for service, prefixes := range rules {
+		rs := make([]builder.RouteRuleConfig, 0, len(prefixes))
+		for _, p := range prefixes {
+			rs = append(rs, builder.RouteRuleConfig{PathPrefix: p})
+		}
+		groups = append(groups, builder.RouteServiceConfig{Service: service, Rules: rs})
+	}
+	return builder.RouterConfig{Router: groups}
+}
+
+// backendConfig 按「服务名 → 实例地址列表」构造 backend 配置
+func backendConfig(services map[string][]string) builder.BackendConfig {
+	svcList := make([]builder.ServiceConfig, 0, len(services))
+	for name, addrs := range services {
+		instances := make([]builder.InstanceConfig, 0, len(addrs))
+		for _, addr := range addrs {
+			instances = append(instances, builder.InstanceConfig{Addr: addr})
+		}
+		svcList = append(svcList, builder.ServiceConfig{
+			Name:      name,
+			Instances: instances,
+		})
+	}
+	return builder.BackendConfig{Service: svcList}
 }

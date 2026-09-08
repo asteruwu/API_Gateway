@@ -2,7 +2,7 @@ package backend
 
 import (
 	"API_Gateway/builder"
-	"fmt"
+	gerrors "API_Gateway/pkg/errors"
 	"io"
 	"log"
 	"net"
@@ -25,11 +25,18 @@ func (b *BManager) Call(service string, payload []byte) ([]byte, error) {
 	// 1. lb 挑选
 	// 2. 转发
 	// 3. 返回响应
-	svc := b.service[service]
-	if svc == nil {
+	var svc *Service
+	if s, ok := b.service[service]; !ok {
 		log.Println("[backend]service not exists")
-		return nil, fmt.Errorf("[backend]service not exists")
+		return nil, gerrors.ErrServiceNotFound
+	} else {
+		svc = s
 	}
+
+	if len(svc.instances) == 0 {
+		return nil, gerrors.ErrNoInstance
+	}
+
 	conn, err := net.Dial("tcp", svc.instances[0].addr) // 先用单实例
 	if err != nil {
 		return nil, err

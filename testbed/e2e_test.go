@@ -22,16 +22,12 @@ func TestEchoConcurrentLimit(t *testing.T) {
 				builder.TCPLimiterFilterConfig{Enable: true, MaxConn: 2},
 			},
 		},
-		Backend: builder.BackendConfig{
-			Service: []builder.ServiceConfig{
-				{
-					Name: "testBackend",
-					Instances: []builder.InstanceConfig{
-						{Addr: backendAddr},
-					},
-				},
+		Handler: builder.HandlerConfig{
+			Filter: builder.HTTPFilterConfig{
+				Filters: []any{routerConfig(map[string][]string{"testBackend": {"/"}})},
 			},
 		},
+		Backend: backendConfig(map[string][]string{"testBackend": {backendAddr}}),
 	}
 	startGateway(t, cfg)
 
@@ -88,16 +84,12 @@ func TestEchoEndToEnd(t *testing.T) {
 		Connector: builder.ConnectorConfig{
 			Port: "9999",
 		},
-		Backend: builder.BackendConfig{
-			Service: []builder.ServiceConfig{
-				{
-					Name: "testBackend",
-					Instances: []builder.InstanceConfig{
-						{Addr: backendAddr},
-					},
-				},
+		Handler: builder.HandlerConfig{
+			Filter: builder.HTTPFilterConfig{
+				Filters: []any{routerConfig(map[string][]string{"testBackend": {"/"}})},
 			},
 		},
+		Backend: backendConfig(map[string][]string{"testBackend": {backendAddr}}),
 	}
 	startGateway(t, cfg)
 
