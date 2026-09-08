@@ -34,16 +34,25 @@ type EncoderConfig struct {
 }
 
 type HTTPFilterConfig struct {
-	// 鉴权 Config
-	// 限流 Config
-	// 路由 Config
-	// ...
+	Filters []any
+}
+
+type RouterConfig struct {
+	Router []RouteServiceConfig
+}
+
+type RouteServiceConfig struct {
+	Service string
+	Rules   []RouteRuleConfig
+}
+
+type RouteRuleConfig struct {
+	PathPrefix string
+	Methods    []string
 }
 
 type TransformerConfig struct {
-	// gRPC
-	// MCP
-	// ...
+	Transformers []any
 }
 
 type BackendConfig struct {
@@ -55,6 +64,7 @@ type ServiceConfig struct {
 	// 具体的后端服务配置
 	Name      string
 	Instances []InstanceConfig
+	Routes    []RouteRuleConfig
 }
 
 type InstanceConfig struct {

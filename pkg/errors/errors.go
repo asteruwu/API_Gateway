@@ -31,6 +31,12 @@ var (
 
 // handler errors
 var (
+	// ErrInitializeHTTPFiltersFailed 初始化 filter 失败
+	ErrInitializeHTTPFiltersFailed = errors.New("handler: initialize http filters failed")
+
+	// ErrRouteNotFound 路由未命中
+	ErrRouteNotFound = errors.New("handler: route not found")
+
 	// ErrReadRequest 读取/解析 HTTP 请求失败
 	ErrReadRequest = errors.New("handler: read request failed")
 

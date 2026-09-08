@@ -18,6 +18,9 @@ type Request struct {
 	ContentLength int64
 
 	RemoteAddr string
+
+	// —— 网关决策：filter 产出，编排层消费 ——
+	Service string
 }
 
 type Response struct {
