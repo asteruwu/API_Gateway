@@ -46,7 +46,7 @@ func TestEchoKeepAlive(t *testing.T) {
 		Connector: builder.ConnectorConfig{Port: "9997"},
 		Handler: builder.HandlerConfig{
 			Filter: builder.HTTPFilterConfig{
-				Filters: []any{routerConfig(map[string][]string{"testBackend": {"/"}})},
+				Filters: []any{routerConfig(nil, map[string][]string{"testBackend": {"/"}})},
 			},
 		},
 		Backend: backendConfig(map[string][]string{"testBackend": {backendAddr}}),

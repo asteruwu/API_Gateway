@@ -24,7 +24,7 @@ func TestEchoConcurrentLimit(t *testing.T) {
 		},
 		Handler: builder.HandlerConfig{
 			Filter: builder.HTTPFilterConfig{
-				Filters: []any{routerConfig(map[string][]string{"testBackend": {"/"}})},
+				Filters: []any{routerConfig(nil, map[string][]string{"testBackend": {"/"}})},
 			},
 		},
 		Backend: backendConfig(map[string][]string{"testBackend": {backendAddr}}),
@@ -86,7 +86,7 @@ func TestEchoEndToEnd(t *testing.T) {
 		},
 		Handler: builder.HandlerConfig{
 			Filter: builder.HTTPFilterConfig{
-				Filters: []any{routerConfig(map[string][]string{"testBackend": {"/"}})},
+				Filters: []any{routerConfig(nil, map[string][]string{"testBackend": {"/"}})},
 			},
 		},
 		Backend: backendConfig(map[string][]string{"testBackend": {backendAddr}}),

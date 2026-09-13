@@ -1,10 +1,14 @@
 package builder
 
+// 运行态配置
+
 type Config struct {
 	Connector ConnectorConfig
 	Handler   HandlerConfig
 	Backend   BackendConfig
 }
+
+// ===== connector 连接层 =====
 
 type ConnectorConfig struct {
 	// 监听端口
@@ -16,6 +20,8 @@ type TCPLimiterFilterConfig struct {
 	Enable  bool
 	MaxConn int
 }
+
+// ===== handler 处理层 =====
 
 type HandlerConfig struct {
 	Decoder     DecoderConfig
@@ -38,7 +44,12 @@ type HTTPFilterConfig struct {
 }
 
 type RouterConfig struct {
-	Router []RouteServiceConfig
+	Router []RouteHostConfig
+}
+
+type RouteHostConfig struct {
+	Host    []string
+	Service []RouteServiceConfig
 }
 
 type RouteServiceConfig struct {
@@ -55,17 +66,18 @@ type TransformerConfig struct {
 	Transformers []any
 }
 
+// ===== backend 后端层 =====
+
 type BackendConfig struct {
-	// 先写静态配置
-	Service []ServiceConfig
+	Service []ServiceRef
 }
 
-type ServiceConfig struct {
-	// 具体的后端服务配置
+type ServiceRef struct {
 	Name      string
 	Instances []InstanceConfig
-	Routes    []RouteRuleConfig
 }
+
+// ===== 共用 =====
 
 type InstanceConfig struct {
 	Addr string

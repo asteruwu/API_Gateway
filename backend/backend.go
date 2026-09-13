@@ -54,7 +54,7 @@ func (b *BManager) Call(service string, payload []byte) ([]byte, error) {
 	return resp, nil
 }
 
-func buildService(svc []builder.ServiceConfig, svcMap map[string]*Service) map[string]*Service {
+func buildService(svc []builder.ServiceRef, svcMap map[string]*Service) map[string]*Service {
 	if svc == nil {
 		return nil
 	}

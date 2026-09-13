@@ -78,8 +78,8 @@ func echoViaHalfClose(t *testing.T, conn net.Conn, want []byte) []byte {
 	return got
 }
 
-// routerConfig 按「服务名 → 路径前缀列表」构造路由 filter 配置
-func routerConfig(rules map[string][]string) builder.RouterConfig {
+// routerConfig 按「服务名 → 路径前缀列表」构造通配域名的路由 filter 配置
+func routerConfig(hosts []string, rules map[string][]string) builder.RouterConfig {
 	groups := make([]builder.RouteServiceConfig, 0, len(rules))
 	for service, prefixes := range rules {
 		rs := make([]builder.RouteRuleConfig, 0, len(prefixes))
@@ -88,18 +88,22 @@ func routerConfig(rules map[string][]string) builder.RouterConfig {
 		}
 		groups = append(groups, builder.RouteServiceConfig{Service: service, Rules: rs})
 	}
-	return builder.RouterConfig{Router: groups}
+	return builder.RouterConfig{
+		Router: []builder.RouteHostConfig{
+			{Host: hosts, Service: groups},
+		},
+	}
 }
 
 // backendConfig 按「服务名 → 实例地址列表」构造 backend 配置
 func backendConfig(services map[string][]string) builder.BackendConfig {
-	svcList := make([]builder.ServiceConfig, 0, len(services))
+	svcList := make([]builder.ServiceRef, 0, len(services))
 	for name, addrs := range services {
 		instances := make([]builder.InstanceConfig, 0, len(addrs))
 		for _, addr := range addrs {
 			instances = append(instances, builder.InstanceConfig{Addr: addr})
 		}
-		svcList = append(svcList, builder.ServiceConfig{
+		svcList = append(svcList, builder.ServiceRef{
 			Name:      name,
 			Instances: instances,
 		})
