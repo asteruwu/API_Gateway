@@ -18,35 +18,17 @@ func testRequest(method, host, path string) *message.Request {
 	}
 }
 
-// testRouter 两个平台分组 + 一个通配分组
+// testRouter 两个平台分组 + 一个通配分组的路由表（编译层展平后的形态）
 func testRouter(t *testing.T) *Router {
 	t.Helper()
-	r, err := NewRouter(builder.RouterConfig{
-		Router: []builder.RouteHostConfig{
-			{
-				Host: []string{"api.shopA.com"},
-				Service: []builder.RouteServiceConfig{
-					{Service: "svcRefund", Rules: []builder.RouteRuleConfig{{PathPrefix: "/orders/refund"}}},
-					{Service: "svcOrder", Rules: []builder.RouteRuleConfig{{PathPrefix: "/orders"}}},
-				},
-			},
-			{
-				Host: []string{"api.shopB.com"},
-				Service: []builder.RouteServiceConfig{
-					{Service: "svcShopB", Rules: []builder.RouteRuleConfig{{PathPrefix: "/orders"}}},
-				},
-			},
-			{
-				Service: []builder.RouteServiceConfig{
-					{Service: "svcWeb", Rules: []builder.RouteRuleConfig{{PathPrefix: "/"}}},
-				},
-			},
+	return NewRouter(builder.RouterConfig{
+		Rules: []builder.RouterRule{
+			{Hosts: []string{"api.shopA.com"}, PathPrefix: "/orders/refund", Service: "svcRefund"},
+			{Hosts: []string{"api.shopA.com"}, PathPrefix: "/orders", Service: "svcOrder"},
+			{Hosts: []string{"api.shopB.com"}, PathPrefix: "/orders", Service: "svcShopB"},
+			{PathPrefix: "/", Service: "svcWeb"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewRouter: %v", err)
-	}
-	return r
 }
 
 // TestRouterHostAndPath 域名 + 路径联合匹配：同一路径按域名分发到不同服务，
@@ -81,19 +63,11 @@ func TestRouterHostAndPath(t *testing.T) {
 
 // TestRouterNotFound 无通配分组时，域名未命中或路径未命中都返回 ErrRouteNotFound
 func TestRouterNotFound(t *testing.T) {
-	r, err := NewRouter(builder.RouterConfig{
-		Router: []builder.RouteHostConfig{
-			{
-				Host: []string{"api.shopA.com"},
-				Service: []builder.RouteServiceConfig{
-					{Service: "svcOrder", Rules: []builder.RouteRuleConfig{{PathPrefix: "/orders"}}},
-				},
-			},
+	r := NewRouter(builder.RouterConfig{
+		Rules: []builder.RouterRule{
+			{Hosts: []string{"api.shopA.com"}, PathPrefix: "/orders", Service: "svcOrder"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewRouter: %v", err)
-	}
 
 	// 域名命中、路径未命中
 	req := testRequest("GET", "api.shopA.com", "/users")
@@ -110,19 +84,12 @@ func TestRouterNotFound(t *testing.T) {
 
 // TestRouterMethodGuard 方法守卫：方法不符时跳过该规则、回落到更短规则
 func TestRouterMethodGuard(t *testing.T) {
-	r, err := NewRouter(builder.RouterConfig{
-		Router: []builder.RouteHostConfig{
-			{
-				Service: []builder.RouteServiceConfig{
-					{Service: "svcPost", Rules: []builder.RouteRuleConfig{{PathPrefix: "/orders", Methods: []string{"POST"}}}},
-					{Service: "svcWeb", Rules: []builder.RouteRuleConfig{{PathPrefix: "/"}}},
-				},
-			},
+	r := NewRouter(builder.RouterConfig{
+		Rules: []builder.RouterRule{
+			{PathPrefix: "/orders", Methods: []string{"POST"}, Service: "svcPost"},
+			{PathPrefix: "/", Service: "svcWeb"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewRouter: %v", err)
-	}
 
 	req := testRequest("POST", "", "/orders/1")
 	if _, err := r.HandleHTTPFilt(req); err != nil {
@@ -143,24 +110,12 @@ func TestRouterMethodGuard(t *testing.T) {
 
 // TestRouterSpecificHostBeatsWildcard 同前缀时，特定域名规则优先于通配规则
 func TestRouterSpecificHostBeatsWildcard(t *testing.T) {
-	r, err := NewRouter(builder.RouterConfig{
-		Router: []builder.RouteHostConfig{
-			{
-				Service: []builder.RouteServiceConfig{
-					{Service: "svcDefault", Rules: []builder.RouteRuleConfig{{PathPrefix: "/orders"}}},
-				},
-			},
-			{
-				Host: []string{"api.shopA.com"},
-				Service: []builder.RouteServiceConfig{
-					{Service: "svcShopA", Rules: []builder.RouteRuleConfig{{PathPrefix: "/orders"}}},
-				},
-			},
+	r := NewRouter(builder.RouterConfig{
+		Rules: []builder.RouterRule{
+			{PathPrefix: "/orders", Service: "svcDefault"},
+			{Hosts: []string{"api.shopA.com"}, PathPrefix: "/orders", Service: "svcShopA"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewRouter: %v", err)
-	}
 
 	req := testRequest("GET", "api.shopA.com", "/orders")
 	if _, err := r.HandleHTTPFilt(req); err != nil {
@@ -176,40 +131,5 @@ func TestRouterSpecificHostBeatsWildcard(t *testing.T) {
 	}
 	if req.Service != "svcDefault" {
 		t.Errorf("other host service = %q, want svcDefault", req.Service)
-	}
-}
-
-// TestRouterRejectInvalidConfig 非法配置在加载期拒绝
-func TestRouterRejectInvalidConfig(t *testing.T) {
-	cases := map[string]builder.RouterConfig{
-		"empty prefix": {Router: []builder.RouteHostConfig{
-			{Service: []builder.RouteServiceConfig{
-				{Service: "svc", Rules: []builder.RouteRuleConfig{{PathPrefix: ""}}},
-			}},
-		}},
-		"empty service": {Router: []builder.RouteHostConfig{
-			{Service: []builder.RouteServiceConfig{
-				{Service: "", Rules: []builder.RouteRuleConfig{{PathPrefix: "/orders"}}},
-			}},
-		}},
-		"duplicate route": {Router: []builder.RouteHostConfig{
-			{
-				Host: []string{"api.shopA.com"},
-				Service: []builder.RouteServiceConfig{
-					{Service: "svcA", Rules: []builder.RouteRuleConfig{{PathPrefix: "/orders"}}},
-				},
-			},
-			{
-				Host: []string{"api.shopA.com"},
-				Service: []builder.RouteServiceConfig{
-					{Service: "svcB", Rules: []builder.RouteRuleConfig{{PathPrefix: "/orders"}}},
-				},
-			},
-		}},
-	}
-	for name, cfg := range cases {
-		if _, err := NewRouter(cfg); !errors.Is(err, gerrors.ErrInitializeHTTPFiltersFailed) {
-			t.Errorf("%s: err = %v, want %v", name, err, gerrors.ErrInitializeHTTPFiltersFailed)
-		}
 	}
 }

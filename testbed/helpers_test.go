@@ -78,21 +78,20 @@ func echoViaHalfClose(t *testing.T, conn net.Conn, want []byte) []byte {
 	return got
 }
 
-// routerConfig 按「服务名 → 路径前缀列表」构造通配域名的路由 filter 配置
+// routerConfig 按「服务名 → 路径前缀列表」构造通配域名的路由 filter 配置，
+// hosts 非 nil 时作为域名分组（多租户按 Host 分发），nil 时通配所有域名
 func routerConfig(hosts []string, rules map[string][]string) builder.RouterConfig {
-	groups := make([]builder.RouteServiceConfig, 0, len(rules))
+	ruleList := make([]builder.RouterRule, 0, len(rules))
 	for service, prefixes := range rules {
-		rs := make([]builder.RouteRuleConfig, 0, len(prefixes))
 		for _, p := range prefixes {
-			rs = append(rs, builder.RouteRuleConfig{PathPrefix: p})
+			ruleList = append(ruleList, builder.RouterRule{
+				Hosts:      hosts,
+				PathPrefix: p,
+				Service:    service,
+			})
 		}
-		groups = append(groups, builder.RouteServiceConfig{Service: service, Rules: rs})
 	}
-	return builder.RouterConfig{
-		Router: []builder.RouteHostConfig{
-			{Host: hosts, Service: groups},
-		},
-	}
+	return builder.RouterConfig{Rules: ruleList}
 }
 
 // backendConfig 按「服务名 → 实例地址列表」构造 backend 配置

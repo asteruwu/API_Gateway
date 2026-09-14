@@ -1,0 +1,28 @@
+platforms:
+  - name: shopA
+    host:
+      - api.shopA.com
+      - shopA.com
+    service:
+      - name: order
+        instances:
+          - addr: "127.0.0.1:8081"
+        routes:
+          - path_prefix: /orders
+            methods: [POST, PUT]
+          - path_prefix: /orders/refund
+      - name: user
+        instances:
+          - addr: "127.0.0.1:8082"
+        routes:
+          - path_prefix: /users
+  - name: shopB
+    host:
+      - api.shopB.com
+    service:
+      - name: order
+        instances:
+          - addr: "127.0.0.1:8091"
+        routes:
+          - path_prefix: /orders
+

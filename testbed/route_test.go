@@ -111,22 +111,10 @@ func TestHostRouteDispatch(t *testing.T) {
 		Connector: builder.ConnectorConfig{Port: "9995"},
 		Handler: builder.HandlerConfig{
 			Filter: builder.HTTPFilterConfig{
-				Filters: []any{builder.RouterConfig{
-					Router: []builder.RouteHostConfig{
-						{
-							Host: []string{"api.shopA.com"},
-							Service: []builder.RouteServiceConfig{
-								{Service: "svcA", Rules: []builder.RouteRuleConfig{{PathPrefix: "/orders"}}},
-							},
-						},
-						{
-							Host: []string{"api.shopB.com"},
-							Service: []builder.RouteServiceConfig{
-								{Service: "svcB", Rules: []builder.RouteRuleConfig{{PathPrefix: "/orders"}}},
-							},
-						},
-					},
-				}},
+				Filters: []any{builder.RouterConfig{Rules: []builder.RouterRule{
+					{Hosts: []string{"api.shopA.com"}, PathPrefix: "/orders", Service: "svcA"},
+					{Hosts: []string{"api.shopB.com"}, PathPrefix: "/orders", Service: "svcB"},
+				}}},
 			},
 		},
 		Backend: backendConfig(map[string][]string{"svcA": {svcA}, "svcB": {svcB}}),

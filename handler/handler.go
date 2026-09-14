@@ -121,10 +121,7 @@ func buildFilter(cfgs []any) ([]hf.HTTPFilter, error) {
 	for i, cfg := range cfgs {
 		switch filter := cfg.(type) {
 		case builder.RouterConfig:
-			router, err := hf.NewRouter(filter)
-			if err != nil {
-				return nil, err
-			}
+			router := hf.NewRouter(filter)
 			filters = append(filters, router)
 		default:
 			log.Printf("[handler]failed to initialize http filter %d, unsupported config type %T", i, cfg)

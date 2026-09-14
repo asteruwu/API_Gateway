@@ -1,0 +1,10 @@
+port: "6666"
+tcp_filters:
+  - type: tcp_limit
+    enable: true
+    max_conn: 100
+http_filters: []
+decoder:
+  max_body: 4096
+encoder: {}
+transformer: {}

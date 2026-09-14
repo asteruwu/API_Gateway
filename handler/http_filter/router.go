@@ -3,7 +3,6 @@ package httpfilter
 import (
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 
 	"API_Gateway/builder"
@@ -12,110 +11,53 @@ import (
 )
 
 type Router struct {
-	name  string
-	rules []routeRule
+	rules []builder.RouterRule
 }
 
-type routeRule struct {
-	hosts   map[string]struct{}
-	prefix  string
-	service string
-	methods map[string]struct{}
-}
-
-func NewRouter(cfg builder.RouterConfig) (*Router, error) {
-	rules := make([]routeRule, 0)
-	seen := make(map[string]struct{})
-	for _, rhc := range cfg.Router {
-		var hosts map[string]struct{}
-		if len(rhc.Host) > 0 {
-			hosts = make(map[string]struct{}, len(rhc.Host))
-			for _, h := range rhc.Host {
-				hosts[h] = struct{}{}
-			}
-		}
-		for _, rsc := range rhc.Service {
-			if rsc.Service == "" {
-				return nil, fmt.Errorf(
-					"%w: empty service name",
-					gerrors.ErrInitializeHTTPFiltersFailed)
-			}
-			for _, rc := range rsc.Rules {
-				if rc.PathPrefix == "" {
-					return nil, fmt.Errorf(
-						"%w: empty path prefix",
-						gerrors.ErrInitializeHTTPFiltersFailed)
-				}
-
-				key := routeKey(rc.PathPrefix, rhc.Host)
-				if _, dup := seen[key]; dup {
-					return nil, fmt.Errorf(
-						"%w: duplicate route %q host %v",
-						gerrors.ErrInitializeHTTPFiltersFailed, rc.PathPrefix, rhc.Host)
-				}
-				seen[key] = struct{}{}
-
-				var methods map[string]struct{}
-				if len(rc.Methods) > 0 {
-					methods = make(map[string]struct{}, len(rc.Methods))
-					for _, m := range rc.Methods {
-						methods[m] = struct{}{}
-					}
-				}
-				rules = append(rules, routeRule{
-					hosts:   hosts,
-					prefix:  rc.PathPrefix,
-					service: rsc.Service,
-					methods: methods})
-			}
-		}
-	}
+func NewRouter(cfg builder.RouterConfig) *Router {
+	rules := make([]builder.RouterRule, len(cfg.Rules))
+	copy(rules, cfg.Rules)
 
 	slices.SortFunc(rules,
-		func(a, b routeRule) int {
-			if len(a.prefix) != len(b.prefix) {
-				return len(b.prefix) - len(a.prefix)
+		func(a, b builder.RouterRule) int {
+			if len(a.PathPrefix) != len(b.PathPrefix) {
+				return len(b.PathPrefix) - len(a.PathPrefix)
 			}
-
 			aw, bw := 0, 0
-			if a.hosts == nil {
+			if len(a.Hosts) == 0 {
 				aw = 1
 			}
-			if b.hosts == nil {
+			if len(b.Hosts) == 0 {
 				bw = 1
 			}
 			return aw - bw
 		})
 
-	return &Router{name: "router", rules: rules}, nil
-}
-
-// routeKey 查重键：前缀 + 域名集合
-func routeKey(prefix string, hosts []string) string {
-	list := append([]string(nil), hosts...)
-	sort.Strings(list)
-	return prefix + "|" + strings.Join(list, ",")
+	return &Router{rules: rules}
 }
 
 func (r *Router) HandleHTTPFilt(req *message.Request) (*message.Response, error) {
 	path := req.URL.Path
 	for i := range r.rules {
 		rule := &r.rules[i]
-		if rule.hosts != nil {
-			if _, ok := rule.hosts[req.Host]; !ok {
-				continue
-			}
-		}
-		if !strings.HasPrefix(path, rule.prefix) {
+		if !matchAny(rule.Hosts, req.Host) {
 			continue
 		}
-		if rule.methods != nil {
-			if _, ok := rule.methods[req.Method]; !ok {
-				continue
-			}
+		if !strings.HasPrefix(path, rule.PathPrefix) {
+			continue
 		}
-		req.Service = rule.service
+		if !matchAny(rule.Methods, req.Method) {
+			continue
+		}
+		req.Service = rule.Service
 		return nil, nil
 	}
 	return nil, fmt.Errorf("%w: path %q host %q", gerrors.ErrRouteNotFound, path, req.Host)
+}
+
+func matchAny(list []string, v string) bool {
+	if len(list) == 0 {
+		return true
+	}
+	return slices.Contains(list, v)
 }

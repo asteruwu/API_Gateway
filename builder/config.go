@@ -44,22 +44,14 @@ type HTTPFilterConfig struct {
 }
 
 type RouterConfig struct {
-	Router []RouteHostConfig
+	Rules []RouterRule
 }
 
-type RouteHostConfig struct {
-	Host    []string
-	Service []RouteServiceConfig
-}
-
-type RouteServiceConfig struct {
-	Service string
-	Rules   []RouteRuleConfig
-}
-
-type RouteRuleConfig struct {
+type RouterRule struct {
+	Hosts      []string
 	PathPrefix string
 	Methods    []string
+	Service    string
 }
 
 type TransformerConfig struct {
@@ -80,5 +72,5 @@ type ServiceRef struct {
 // ===== 共用 =====
 
 type InstanceConfig struct {
-	Addr string
+	Addr string `yaml:"addr"`
 }
