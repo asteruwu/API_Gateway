@@ -17,9 +17,6 @@ func BuildTCPFilters(cfgs []any) ([]TCPFilter, error) {
 	for i, cfg := range cfgs {
 		switch filter := cfg.(type) {
 		case builder.TCPLimiterFilterConfig:
-			if !filter.Enable {
-				continue
-			}
 			lf := NewLimitFilter(int64(filter.MaxConn))
 			filters = append(filters, lf)
 		default:

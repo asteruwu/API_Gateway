@@ -19,7 +19,7 @@ func TestEchoConcurrentLimit(t *testing.T) {
 		Connector: builder.ConnectorConfig{
 			Port: "9998",
 			Filters: []any{
-				builder.TCPLimiterFilterConfig{Enable: true, MaxConn: 2},
+				builder.TCPLimiterFilterConfig{MaxConn: 2},
 			},
 		},
 		Handler: builder.HandlerConfig{

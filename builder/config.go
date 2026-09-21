@@ -17,7 +17,6 @@ type ConnectorConfig struct {
 }
 
 type TCPLimiterFilterConfig struct {
-	Enable  bool
 	MaxConn int
 }
 
