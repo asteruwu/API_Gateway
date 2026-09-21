@@ -44,7 +44,10 @@ func NewHandler(cfg builder.HandlerConfig, next func(service string, payload []b
 	if err != nil {
 		return nil, err
 	}
-	transformers := buildTransformer(cfg.Transformer)
+	transformers, err := buildTransformer(cfg.Transformer)
+	if err != nil {
+		return nil, err
+	}
 	return &HTTPHandler{
 		decoder:      decoder,
 		encoder:      encoder,
@@ -133,13 +136,18 @@ func buildFilter(cfgs []any) ([]hf.HTTPFilter, error) {
 	return filters, nil
 }
 
-func buildTransformer(cfg builder.TransformerConfig) map[string]transformer.Transformer {
-	tMap := make(map[string]transformer.Transformer)
-	t := transformer.TestTransformer{
-		Name: "testT",
+func buildTransformer(cfg builder.TransformerConfig) (map[string]transformer.Transformer, error) {
+	tMap := make(map[string]transformer.Transformer, len(cfg.Transformers))
+	for name, c := range cfg.Transformers {
+		switch c.(type) {
+		case builder.TestTransformerConfig:
+			tMap[name] = &transformer.TestTransformer{Name: name}
+		default:
+			log.Printf("[handler]failed to initialize transformer %q, unsupported config type %T", name, c)
+			return nil, gerrors.ErrInitializeTransformersFailed
+		}
 	}
-	tMap[t.Name] = &t
-	return tMap
+	return tMap, nil
 }
 
 func buildConnHandler(conn net.Conn) ConnHandler {

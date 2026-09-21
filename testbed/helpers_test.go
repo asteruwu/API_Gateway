@@ -34,6 +34,9 @@ func startEchoBackend(t *testing.T) string {
 // 后台启动 Accept 循环并等待就绪。测试结束时由 t.Cleanup 关闭监听器。
 func startGateway(t *testing.T, cfg *builder.Config) {
 	t.Helper()
+	if len(cfg.Handler.Transformer.Transformers) == 0 {
+		cfg.Handler.Transformer = defaultTestTransformerConfig()
+	}
 	bm := backend.NewBManager(cfg.Backend)
 	hdl, err := handler.NewHandler(cfg.Handler, bm.Call)
 	if err != nil {
@@ -92,6 +95,14 @@ func routerConfig(hosts []string, rules map[string][]string) builder.RouterConfi
 		}
 	}
 	return builder.RouterConfig{Rules: ruleList}
+}
+
+// defaultTestTransformerConfig 返回一份启用了占位 transformer（name 固定为
+// "testT"，与 handler.Process 里硬编码查找的 key 保持一致）的运行态配置。
+func defaultTestTransformerConfig() builder.TransformerConfig {
+	return builder.TransformerConfig{
+		Transformers: map[string]any{"testT": builder.TestTransformerConfig{}},
+	}
 }
 
 // backendConfig 按「服务名 → 实例地址列表」构造 backend 配置

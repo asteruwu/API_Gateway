@@ -55,8 +55,10 @@ type RouterRule struct {
 }
 
 type TransformerConfig struct {
-	Transformers []any
+	Transformers map[string]any
 }
+
+type TestTransformerConfig struct{}
 
 // ===== backend 后端层 =====
 

@@ -62,6 +62,9 @@ var (
 
 	// ErrHandleProcessResponse 响应处理失败
 	ErrHandleProcessResponse = errors.New("handler: handle process response failed")
+
+	// ErrInitializeTransformersFailed 初始化 transformer 失败
+	ErrInitializeTransformersFailed = errors.New("handler: initialize transformers failed")
 )
 
 // backend errors
