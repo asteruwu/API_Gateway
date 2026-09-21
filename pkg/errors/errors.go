@@ -5,6 +5,34 @@ import "errors"
 // 未分类的内部错误
 var ErrInternal = errors.New("gateway: internal error")
 
+// builder errors
+var (
+	// ErrInvalidConfig 配置校验未通过的顶层包装错误，具体原因见其包裹的错误
+	ErrInvalidConfig = errors.New("builder: invalid config")
+
+	// ErrEmptyPlatformName platform 名为空
+	ErrEmptyPlatformName = errors.New("builder: platform name is empty")
+
+	// ErrDuplicatePlatformName platform 名重复
+	ErrDuplicatePlatformName = errors.New("builder: duplicate platform name")
+
+	// ErrEmptyServiceName service 名为空
+	ErrEmptyServiceName = errors.New("builder: service name is empty")
+
+	// ErrDuplicateServiceName 同一 platform 下 service 名重复
+	ErrDuplicateServiceName = errors.New("builder: duplicate service name within platform")
+
+	// ErrDuplicateRoute 不同 service 声明了会产生歧义的相同 host+path+method 组合
+	ErrDuplicateRoute = errors.New("builder: duplicate or ambiguous route")
+
+	// ErrEmptyServiceInstances service 声明了 0 个实例，注册后必然在运行期触发 ErrNoInstance
+	ErrEmptyServiceInstances = errors.New("builder: service has no instances")
+
+	// ErrFilterConfigNotFound PluginSet.Enabled 声明了某个名字要启用，
+	// 但 PluginSet.Configs 里找不到同名配置
+	ErrFilterConfigNotFound = errors.New("builder: enabled filter has no matching config")
+)
+
 // connector errors
 var (
 	// ErrListenFailed 监听端口失败
