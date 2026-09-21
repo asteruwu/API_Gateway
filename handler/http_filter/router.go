@@ -1,6 +1,7 @@
 package httpfilter
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -14,9 +15,13 @@ type Router struct {
 	rules []builder.RouterRule
 }
 
-func NewRouter(cfg builder.RouterConfig) *Router {
+func NewRouter(cfg builder.RouterConfig) (*Router, error) {
 	rules := make([]builder.RouterRule, len(cfg.Rules))
 	copy(rules, cfg.Rules)
+
+	if errs := validateRules(rules); len(errs) > 0 {
+		return nil, fmt.Errorf("%w: %w", gerrors.ErrInvalidRouterRule, errors.Join(errs...))
+	}
 
 	slices.SortFunc(rules,
 		func(a, b builder.RouterRule) int {
@@ -33,7 +38,20 @@ func NewRouter(cfg builder.RouterConfig) *Router {
 			return aw - bw
 		})
 
-	return &Router{rules: rules}
+	return &Router{rules: rules}, nil
+}
+
+func validateRules(rules []builder.RouterRule) []error {
+	var errs []error
+	for i, rule := range rules {
+		if rule.Service == "" {
+			errs = append(errs, fmt.Errorf("rules[%d]: service is empty", i))
+		}
+		if !strings.HasPrefix(rule.PathPrefix, "/") {
+			errs = append(errs, fmt.Errorf("rules[%d]: path prefix %q must start with \"/\"", i, rule.PathPrefix))
+		}
+	}
+	return errs
 }
 
 func (r *Router) HandleHTTPFilt(req *message.Request) (*message.Response, error) {

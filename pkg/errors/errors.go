@@ -65,6 +65,9 @@ var (
 
 	// ErrInitializeTransformersFailed 初始化 transformer 失败
 	ErrInitializeTransformersFailed = errors.New("handler: initialize transformers failed")
+
+	// ErrInvalidRouterRule 路由规则自身不合法
+	ErrInvalidRouterRule = errors.New("handler: invalid router rule")
 )
 
 // backend errors
