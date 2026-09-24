@@ -3,6 +3,7 @@ package builder
 import (
 	"fmt"
 
+	"API_Gateway/pkg/tools"
 	gerrors "API_Gateway/pkg/errors"
 )
 
@@ -52,7 +53,7 @@ func hydrateTCPLimit(raw any) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("expected map, got %T", raw)
 	}
-	maxConn, ok := toInt(m["max_conn"])
+	maxConn, ok := tools.ToInt(m["max_conn"])
 	if !ok {
 		return nil, fmt.Errorf("max_conn: expected integer")
 	}
@@ -63,15 +64,3 @@ func hydrateTestTransformer(raw any) (any, error) {
 	return TestTransformerConfig{}, nil
 }
 
-func toInt(v any) (int, bool) {
-	switch n := v.(type) {
-	case int:
-		return n, true
-	case int64:
-		return int(n), true
-	case float64:
-		return int(n), true
-	default:
-		return 0, false
-	}
-}

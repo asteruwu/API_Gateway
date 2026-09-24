@@ -3,6 +3,7 @@ package builder
 import (
 	"fmt"
 
+	"API_Gateway/pkg/tools"
 	gerrors "API_Gateway/pkg/errors"
 )
 
@@ -56,7 +57,7 @@ func validateRouteConflicts(rules []RouterRule) []error {
 		for _, h := range hosts {
 			k := key{h, r.PathPrefix}
 			for _, prev := range seen[k] {
-				if methodsOverlap(prev.Methods, r.Methods) {
+				if tools.StringsOverlap(prev.Methods, r.Methods) {
 					errs = append(errs, fmt.Errorf("%w: host %q path %q between service %q and %q",
 						gerrors.ErrDuplicateRoute, h, r.PathPrefix, prev.Service, r.Service))
 				}
@@ -78,19 +79,3 @@ func validateServiceInstances(services []ServiceRef) []error {
 	return errs
 }
 
-// methodsOverlap 判断两组 method 是否有交集；空集合表示「匹配所有方法」，必然与任何非空集合重叠
-func methodsOverlap(a, b []string) bool {
-	if len(a) == 0 || len(b) == 0 {
-		return true
-	}
-	set := make(map[string]bool, len(a))
-	for _, m := range a {
-		set[m] = true
-	}
-	for _, m := range b {
-		if set[m] {
-			return true
-		}
-	}
-	return false
-}
