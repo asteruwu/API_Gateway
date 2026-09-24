@@ -1,18 +1,19 @@
-port: "6666"
-tcp_filters:
-  enabled:
-    - tcp_limit
-  configs:
-    tcp_limit:
-      max_conn: 100
-http_filters:
-  enabled: []
-  configs: {}
-decoder:
-  max_body: 4096
-encoder: {}
-transformer:
-  enabled:
-    - testT
-  configs:
-    testT: {}
+gateway:
+  port: "6666"
+  tcp_filters:
+    enabled:
+      - tcp_limit
+    configs:
+      tcp_limit:
+        max_conn: 100
+  http_filters:
+    enabled: []
+    configs: {}
+  decoder:
+    max_body: 4096
+  encoder: {}
+  transformer:
+    enabled:
+      - testT
+    configs:
+      testT: {}

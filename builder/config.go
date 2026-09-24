@@ -29,15 +29,6 @@ type HandlerConfig struct {
 	Transformer TransformerConfig
 }
 
-type DecoderConfig struct {
-	// 解析器配置
-	MaxBody int64
-}
-
-type EncoderConfig struct {
-	// 编码器配置
-}
-
 type HTTPFilterConfig struct {
 	Filters []any
 }
@@ -74,4 +65,13 @@ type ServiceRef struct {
 
 type InstanceConfig struct {
 	Addr string `yaml:"addr"`
+}
+
+type DecoderConfig struct {
+	// 解析器配置
+	MaxBody int64 `yaml:"max_body"`
+}
+
+type EncoderConfig struct {
+	// 编码器配置
 }

@@ -10,7 +10,10 @@ import (
 
 func main() {
 	// 构建配置
-	table := builder.Build()
+	table, err := builder.Build("configs")
+	if err != nil {
+		log.Fatalf("[main]failed to build config: %s", err.Error())
+	}
 	// 初始化
 	bk := backend.NewBManager(table.Backend)
 

@@ -1,5 +1,9 @@
 package builder
 
+type gatewayFile struct {
+	Gateway GatewayConfig `yaml:"gateway"`
+}
+
 // GatewayConfig 网关自身参数：端口、插件列表、解码上限等
 type GatewayConfig struct {
 	Port        string        `yaml:"port"`

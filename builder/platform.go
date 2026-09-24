@@ -1,5 +1,9 @@
 package builder
 
+type platformFile struct {
+	Platforms []PlatformConfig `yaml:"platforms"`
+}
+
 type PlatformConfig struct {
 	Name    string          `yaml:"name"`
 	Host    []string        `yaml:"host"`
