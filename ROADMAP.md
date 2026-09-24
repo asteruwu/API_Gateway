@@ -38,11 +38,11 @@
 
 ### 当前状态
 
-**端到端链路已打通，连接层与请求解析已填实（v00-v04 已完成）。** 全部包和接口已就位，`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）。
+**路由能力已落地，配置加载链路完整打通（v00-v05 已完成）。** 全部包和接口已就位，`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）。
 
-相对 v03 的关键变化：`message.Request` 结构化（Method/URL/Header/Host/Proto/ContentLength/Body），`Decoder.Decode` 从 `*http.Request` 完整映射并处理 body 边界（`ContentLength` 预检 + `LimitReader` 双重限制，chunked、体长与声明不符、超限各有明确哨兵错误）；encoder 升格为真实 HTTP 响应帧（状态行 + headers，Content-Length 由编码器统一计算），`ErrorResponse` 按错误域映射状态码（413/400/403/502）且 `message` 保持零依赖叶子包；keep-alive 接入解码结果（`req.Close` → `ch.close`，覆盖 `Connection: close` 与 HTTP/1.0 语义），同一条连接可连续处理多个请求。
+相对 v04 的关键变化：Router 真实实现（最长前缀匹配 + Host 分发 + Method 守卫，`req.Service` 传递路由结果）；配置加载链路完整打通（`loader.go` 读 YAML → `hydrate.go` 类型水合 → `compile.go` 编译为运行态），`Build(configDir)` 串联全流程，支持多租户 `gateway.yaml` + `platform.yaml` 双文件配置；`ErrorResponse` 新增 404 映射；通用工具函数抽取到 `pkg/tools/`（`ToInt`、`StringsOverlap`、`StringsContain`、`LoadYAML`）。
 
-仍保留的边界（照旧）：filter/transformer 仍是假实现（透传）；路由仍是 `Process` 里硬编码的 `"testBackend"`，v05 落地配置驱动路由。
+仍保留的边界：transformer 仍是假实现（透传），`Process` 中 transformer 选择硬编码为 `"testT"`，v06 落地协议转换后改为配置驱动。
 
 **接手前请务必先读「架构约定」一节**——那 9 条是反复讨论后定下的边界（模块间怎么解耦、协议知识关在哪、连接池归谁、响应从哪出去），从代码本身看不出来，但改动时必须遵守。「已知待办」记录了已识别但尚未处理的问题，不必当成 bug 重复上报。
 
@@ -76,7 +76,7 @@
 
 ## 当前进度
 
-> 最后更新：2026-08-31　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
+> 最后更新：2026-09-24　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
 
 - [x] **v00 项目初始化** —— 完成，数据流已闭合
   - [x] `main.go`：按逆序完成编排（backend → handler → connector）
@@ -107,7 +107,13 @@
   - [x] encoder 真实编码：状态行 + headers + Content-Length（由编码器统一计算）；`ErrorResponse` 按错误域映射状态码（413/400/403/502），`message` 保持零依赖
   - [x] keep-alive：`req.Close` → `ch.close`（覆盖 `Connection: close` 与 HTTP/1.0 默认短连接），同一条连接连续处理多请求
   - [x] 测试：`decoder_test.go` 八个单元测试（字段映射、body 临界值、chunked 超限、体长不符、默认 maxBody、无 body）+ testbed 新增 `TestEchoKeepAlive`（同连接 3 个请求 + `Connection: close` 后 EOF），全部通过（含 `-race`）
-- [ ] v05 路由能力
+- [x] **v05 路由能力** —— 完成，配置驱动路由 + 配置加载链路打通
+  - [x] Router 真实实现：`http_filter/router.go`，最长前缀匹配 + Host 分发 + Method 守卫，排序保证特定域名优先于通配；路由结果通过 `req.Service` 字段传递，`Process` 消费
+  - [x] 配置加载链路：`loader.go`（Load 读 YAML）→ `hydrate.go`（Hydrate 按插件注册表将 `map[string]any` 转具体类型）→ `compile.go`（Compile 压平路由/服务、校验、装配）→ `build.go`（`Build(configDir)` 串联全流程）
+  - [x] 多租户配置：`gateway.yaml`（网关自身）+ `platform.yaml`（平台/服务/路由），`qualifiedServiceName` 以 `"platform.service"` 隔离跨平台同名服务
+  - [x] 未命中路由：`ErrRouteNotFound` + `ErrorResponse` 映射 404，业务错误写回后 keep-alive 继续
+  - [x] 通用工具抽取：`pkg/tools/`（`conv.go` / `slice.go` / `yaml.go`）
+  - [x] 测试：`router_test.go` 五个单元测试（域名+路径联合匹配、未命中、方法守卫、特定域名优先、规则校验）+ `compile_test.go` 十三个编译测试 + testbed `route_test.go` 两个端到端用例（路径分发 + 多租户 Host 分发）
 - [ ] v06 连接抽象
 - [ ] v07 安全认证
 - [ ] v08 管道细化
@@ -152,16 +158,18 @@ conn → Decode → message.Request → filters
 - 假后端协议和 transformer 绑定演进：现阶段裸字节 echo（half-close 定界），v06 起挂 gRPC handler（协议帧定界）。
 - 行为模式先做 `echo` + `fixed`，`error`/`delay` 等做到重试/熔断（v03/v06）时再加。
 
-## 下一步（v05 路由能力）
+## 下一步（v06 连接抽象）
 
-v04 已让 decoder 产出结构化请求、encoder 产出真实 HTTP 响应，v05 重点在路由从硬编码走向配置驱动：
+v05 已让路由和配置加载链路完整打通，v06 重点在协议转换真实落地 + 连接池：
 
-1. router 真实实现
-   1. `handler/http_filter/` 落地 Router：按请求 Method + URL Path 匹配路由规则，产出目标 service 名，替换 `Process` 里硬编码的 `"testBackend"`
-   2. 定好路由结果如何流入主流程：现在 `HTTPFilter.HandleHTTPFilt` 只返回 `(*message.Response, error)`，需要定「filter 如何把 service 名交给 `next`」（扩接口 / `message.Request` 挂路由结果 / 编排层显式串联），开工前先定案
-   3. 路由规则配置化：`builder` 扩展路由配置（规则列表：路径/方法 → service），`main.go` 链路打通配置 → router；匹配语义先做精确/前缀，不上正则
-2. 未命中路由的错误路径
-   1. 新增 `gerrors.ErrRouteNotFound`，`ErrorResponse` 映射 404（业务错误，写回后 keep-alive 继续）
-3. 测试
-   1. router 匹配单元测试（命中 / 未命中 / 多规则）
-   2. testbed 配置两条路由指向不同假后端，验证按路径转发
+1. ConnPool 落地（单连接版）
+   1. `backend/pool.go` 从骨架填实：连接获取/归还/拨号、idle 复用
+   2. `Call` 从短连接（dial → half-close → 读 EOF）升级为从池中取连接
+2. 第一个 transformer 真实实现
+   1. 协议帧定界（替代 half-close），transformer 负责序列化/反序列化协议帧
+   2. `Process` 中 transformer 选择从硬编码 `"testT"` 改为配置驱动（按 service 或全局配置选取）
+3. Call + ConnPool + 协议帧定界三者联动
+   1. 长连接复用依赖协议边界，协议边界由 transformer 定义——三者必须一起升级
+4. 测试
+   1. 连接池单元测试（获取/归还/超限/失效）
+   2. testbed 验证长连接复用
