@@ -1,9 +1,12 @@
 package backend
 
-import "sync/atomic"
+import (
+	"net"
+	"sync/atomic"
+)
 
 type Backend interface {
-	Call(service string, payload []byte) ([]byte, error)
+	Call(service string) (net.Conn, error)
 }
 
 type Service struct {

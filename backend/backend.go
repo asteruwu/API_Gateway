@@ -3,7 +3,6 @@ package backend
 import (
 	"API_Gateway/builder"
 	gerrors "API_Gateway/pkg/errors"
-	"io"
 	"log"
 	"net"
 )
@@ -20,11 +19,11 @@ func NewBManager(cfg builder.BackendConfig) *BManager {
 	}
 }
 
-func (b *BManager) Call(service string, payload []byte) ([]byte, error) {
+func (b *BManager) Call(service string) (net.Conn, error) {
 	// 0. 查表
-	// 1. lb 挑选
-	// 2. 转发
-	// 3. 返回响应
+	// 1. lb 挑选实例
+	// 2. 连接池选取连接
+	// 3. 返回
 	var svc *Service
 	if s, ok := b.service[service]; !ok {
 		log.Println("[backend]service not exists")
@@ -41,17 +40,7 @@ func (b *BManager) Call(service string, payload []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
-	_, err = conn.Write(payload)
-	if err != nil {
-		return nil, err
-	}
-	conn.(*net.TCPConn).CloseWrite()
-	resp, err := io.ReadAll(conn)
-	if err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return conn, nil
 }
 
 func buildService(svc []builder.ServiceRef, svcMap map[string]*Service) map[string]*Service {

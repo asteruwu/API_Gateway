@@ -27,7 +27,7 @@ type HTTPHandler struct {
 	encoder      *Encoder
 	filters      []hf.HTTPFilter
 	transformers map[string]transformer.Transformer
-	next         func(service string, payload []byte) ([]byte, error)
+	next         func(service string) (net.Conn, error)
 }
 
 type ConnHandler struct {
@@ -36,7 +36,7 @@ type ConnHandler struct {
 	close  bool
 }
 
-func NewHandler(cfg builder.HandlerConfig, next func(service string, payload []byte) ([]byte, error)) (*HTTPHandler, error) {
+func NewHandler(cfg builder.HandlerConfig, next func(service string) (net.Conn, error)) (*HTTPHandler, error) {
 	decoder := NewDecoder(cfg.Decoder)
 	encoder := NewEncoder(cfg.Encoder)
 	// 初始化 filters 和 transformer
@@ -82,21 +82,15 @@ func (h *HTTPHandler) Process(ch *ConnHandler) (*message.Response, error) {
 	if msgReq.Service == "" {
 		return nil, gerrors.ErrServiceNotFound
 	}
-	// 3. 协议转换
-	transformer_0 := h.transformers["testT"]
-	tResp, err := transformer_0.Transform(&msgReq)
-	if err != nil {
-		return nil, err
-	}
-	// 4. next 调用
+	// 3. next 调用
 	log.Println("[handler]pass message to backend")
-	resp, err := h.next(msgReq.Service, tResp)
+	conn, err := h.next(msgReq.Service)
 	if err != nil {
 		return nil, err
 	}
-	// 5. 协议转换
-	// return h.transformer["type"].Restore(res)
-	return transformer_0.Restore(resp)
+	// 4. 协议转换
+	transformer_0 := h.transformers["testT"]
+	return transformer_0.Transform(&msgReq, conn)
 }
 
 func (h *HTTPHandler) HandleHTTPConn(conn net.Conn) error {
