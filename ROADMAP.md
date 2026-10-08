@@ -13,12 +13,15 @@
 ### 一次请求的完整旅程
 
 ```
-客户端 --HTTP--> [connector 连接层] --> [handler 处理层] --> [backend 后端层] --协议字节--> 后端服务
-                  监听/接受连接         解析/过滤/协议转换      查表/选实例/取连接
-                  连接级准入                                   转发并读回响应
+客户端 --HTTP--> [connector 连接层] --> [handler 处理层] --> [backend 后端层]
+                  监听/接受连接         解析/过滤              查表/选实例/借出连接
+                  连接级准入           ↕ transformer ↕         连接池管理
+                                      拿到后端连接后           ↑ 归还连接
+                                      在连接上完成协议交互     |
+                                      (写请求帧+读响应帧)  ---+
 ```
 
-响应沿原路返回，在 handler 内被翻译回 HTTP 并写回同一条连接。逐环节的类型流转见下文「数据流」一节。
+handler 拿到 backend 借出的后端连接后，交给 transformer 在连接上完成完整的协议交互（写请求帧 + 读响应帧），再翻译回 HTTP 写回客户端连接。逐环节的类型流转见下文「数据流」一节。
 
 ### 包结构与职责
 
@@ -28,11 +31,11 @@
 | `builder/` | 读配置、构建运行时配置表。**纯数据包**，不 import 任何运行时模块 | `Config` 及各子 Config |
 | `connector/` | 监听端口、Accept 连接、跑连接级过滤器，再把 conn 交给下游 | `Listener`、`Connector` |
 | `connector/tcp_filter/` | 连接级过滤器（连接数限流等），只做准入判断 | `TCPFilter` |
-| `handler/` | 处理层主流程：解码 → 过滤 → 协议转换 → 调后端 → 还原 → 编码写回 | `HTTPHandler`、`Decoder`、`Encoder` |
+| `handler/` | 处理层主流程：解码 → 过滤 → 借后端连接 → transformer 协议交互 → 编码写回 | `HTTPHandler`、`Decoder`、`Encoder` |
 | `handler/message/` | **网关唯一的中间表示**（统一 HTTP 模型），叶子包，不依赖任何包 | `Request`、`Response` |
 | `handler/http_filter/` | 请求级过滤器：鉴权、限流、路由。可放行或中断并直接产出响应 | `HTTPFilter` |
-| `handler/transformer/` | 协议转换，每个实现代表一种后端协议。协议细节全部封在实现内部 | `Transformer` |
-| `backend/` | 服务注册表、负载均衡选实例、连接池、实际转发 | `BManager`、`Service`、`Instance`、`LoadBalancer`、`ConnPool` |
+| `handler/transformer/` | 协议转换，每个实现代表一种后端协议。拿到后端连接后全权负责写请求帧、读响应帧、反序列化，协议细节全部封在实现内部 | `Transformer` |
+| `backend/` | 服务注册表、负载均衡选实例、**连接池管理（借出/归还）**，不接触协议字节 | `BManager`、`Service`、`Instance`、`LoadBalancer`、`ConnPool` |
 
 依赖方向单向无环：`main → {connector, handler, backend}`，三个顶层模块**互不 import**，靠 main.go 注入函数值接线；`message` 是被 `http_filter` 和 `transformer` 共享的叶子包。
 
@@ -42,9 +45,11 @@
 
 相对 v04 的关键变化：Router 真实实现（最长前缀匹配 + Host 分发 + Method 守卫，`req.Service` 传递路由结果）；配置加载链路完整打通（`loader.go` 读 YAML → `hydrate.go` 类型水合 → `compile.go` 编译为运行态），`Build(configDir)` 串联全流程，支持多租户 `gateway.yaml` + `platform.yaml` 双文件配置；`ErrorResponse` 新增 404 映射；通用工具函数抽取到 `pkg/tools/`（`ToInt`、`StringsOverlap`、`StringsContain`、`LoadYAML`）。
 
-仍保留的边界：transformer 仍是假实现（透传），`Process` 中 transformer 选择硬编码为 `"testT"`，v06 落地协议转换后改为配置驱动。
+相对 v05 的关键变化（v06 准备重构）：`Backend.Call` 签名从 `(service, payload) → ([]byte, error)` 改为 `(service) → (net.Conn, error)`，backend 不再收发协议字节，只负责借出连接；`Transformer` 接口从 `Transform`/`Restore` 纯序列化双方法合并为 `Transform(req, conn) → (*Response, error)`，拿到后端连接后全权完成协议 IO；`handler.Process` 编排顺序相应调整为：先 `next(service)` 借连接，再 `transformer.Transform(req, conn)` 做协议交互。`TestTransformer` 已填实为透传（write → half-close → readAll）。
 
-**接手前请务必先读「架构约定」一节**——那 9 条是反复讨论后定下的边界（模块间怎么解耦、协议知识关在哪、连接池归谁、响应从哪出去），从代码本身看不出来，但改动时必须遵守。「已知待办」记录了已识别但尚未处理的问题，不必当成 bug 重复上报。
+仍保留的边界：transformer 选择硬编码为 `"testT"`，v06 落地协议转换后改为配置驱动；`TestTransformer.Transform` 内 `defer conn.Close()` 在 ConnPool 落地后需改为 release 回调。
+
+**接手前请务必先读「架构约定」一节**——那是反复讨论后定下的边界（模块间怎么解耦、协议知识关在哪、连接池归谁、响应从哪出去），从代码本身看不出来，但改动时必须遵守。「已知待办」记录了已识别但尚未处理的问题，不必当成 bug 重复上报。
 
 ## 里程碑一览
 
@@ -56,10 +61,10 @@
 | v03 | 连接层填实 | tcp_filter 编排能力（至少一个连接级限流）+ 字节流处理健壮性 |
 | v04 | 请求解析 | decoder 真正产出结构化 HTTP 请求（优先用 `http.ReadRequest`，不接管连接） |
 | v05 | 路由能力 | router 真实实现，支持配置文件定义多条路由规则 |
-| v06 | 连接抽象 | ConnPool 落地（单连接版）+ 第一个 transformer 真实实现（比如先做 gRPC） |
+| v06 | 连接抽象 | ConnPool 落地 + 第一个 transformer 真实实现（比如先做 gRPC） |
 | v07 | 安全认证 | 鉴权 filter 真实逻辑（JWT 校验） |
 | v08 | 管道细化 | filter chain 可配置化（不同路由挂不同 filter 组合）+ HTTP 层精细限流 |
-| v09 | 协议扩展 | 第二个 transformer 实现（验证新增协议不改已有代码）+ 连接池完善（多连接、失效检测） |
+| v09 | 协议扩展 | 第二个 transformer 实现（验证新增协议不改已有代码） |
 | v10 | 最终完善 | 错误处理统一、响应路径补全走查、代码整理，可运行版本 |
 
 ## 汇总时间线
@@ -76,7 +81,7 @@
 
 ## 当前进度
 
-> 最后更新：2026-09-24　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
+> 最后更新：2026-09-28　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
 
 - [x] **v00 项目初始化** —— 完成，数据流已闭合
   - [x] `main.go`：按逆序完成编排（backend → handler → connector）
@@ -84,16 +89,16 @@
   - [x] `connector/`：`model.go`（`Connector` 接口）、`listener.go`（Accept 循环 + `next` 注入）、`tcp_filter/filter.go`（`TCPFilter` 接口）
   - [x] `handler/`：`model.go`（`Handler` 接口）、`handler.go`（`HTTPHandler` + `Process`/`HandleHTTPConn` + `F2T`/`T2F`）、`decoder.go`、`encoder.go`
   - [x] `handler/message/`：网关统一的 `Request`/`Response` 模型
-  - [x] `handler/http_filter/filter.go`、`handler/transformer/transformer.go`：接口定义，`Transformer` 出向 `Transform` / 回程 `Restore` 双向齐备，直接收发 `*message.Request`/`*message.Response`
-  - [x] `backend/`：`model.go`（`Backend`/`Service`/`Instance`）、`backend.go`（`BManager`）、`forwarder.go`、`pool.go`
+  - [x] `handler/http_filter/filter.go`、`handler/transformer/transformer.go`：接口定义，`Transformer.Transform(req, conn)` 全权负责在后端连接上完成协议交互
+  - [x] `backend/`：`model.go`（`Backend`/`Service`/`Instance`）、`backend.go`（`BManager`，`Call` 只借出连接）、`pool.go`
 - [x] **v01 网络骨架** —— 完成，connector 最简监听 + 假后端 echo 服务联通
   - [x] `ConnectorConfig` 加监听端口字段，`NewListener` 把 `addr` 真正赋上
   - [x] `Connector` 接口 + `Listener.Connect()` 补 error 返回，`net.Listen` 失败反馈到 main.go
   - [x] `main.go` 接住启动 error，修掉 `backend`/`handler` 变量名遮蔽包名
   - [x] 假 echo 后端验证「客户端 → 网关 → 后端 → 客户端」连接能通
 - [x] **v02 端到端打通** —— 完成，完整链路能返回 echo 数据
-  - [x] `ServiceConfig` 加 `Name`/`Instances`/`Addr`，`NewBManager` 建表，`Call` 恢复短连接网络转发（dial → half-close → 读 EOF），网关不硬编码后端地址
-  - [x] `handler.Process` 跑通主流程骨架：decode → filters（假实现）→ transform → next(Call) → restore → encode
+  - [x] `ServiceConfig` 加 `Name`/`Instances`/`Addr`，`NewBManager` 建表，`Call` 返回后端连接（当前仍为每次 Dial 新建），网关不硬编码后端地址
+  - [x] `handler.Process` 跑通主流程骨架：decode → filters（假实现）→ next(Call) 借连接 → transformer.Transform(req, conn) → encode
   - [x] decoder / encoder / filter / transformer 全部假实现，完整链路能返回数据
   - [x] 搭建集成 testbed（`testbed/e2e_test.go` + `fakebackend`），验证「客户端 → 网关 → 后端 → 客户端」端到端返回 echo 数据
 - [x] **v03 连接层填实** —— 完成，连接级限流 + 字节流健壮性落地
@@ -123,20 +128,21 @@
 ## 数据流（已闭合）
 
 ```
-conn → Decode → message.Request → filters
-     → Transform → []byte → next(service, payload) → []byte
-     → Restore → message.Response → Encode → conn.Write
+clientConn → Decode → message.Request → filters
+           → next(service) → backendConn           （backend 借出连接）
+           → transformer.Transform(req, backendConn)（在后端连接上完成协议交互）
+           → message.Response → Encode → clientConn.Write
 ```
 
 ## 架构约定（已定，后续照此执行）
 
-1. **模块独立 + main.go 编排**：模块间不互相 import，跨模块函数签名只用标准库类型（`func(net.Conn) error`、`func(service string, payload []byte) ([]byte, error)`）。`builder` 是唯一例外——纯数据包，只用于构造期，自身不 import 任何运行时模块。
+1. **模块独立 + main.go 编排**：模块间不互相 import，跨模块函数签名只用标准库类型（`func(net.Conn) error`、`func(service string) (net.Conn, error)`）。`builder` 是唯一例外——纯数据包，只用于构造期，自身不 import 任何运行时模块。
 2. **初始化逆序 = 数据流逆序**：backend → handler → connector。构造注入保证依赖图无环。
 3. **`handler/message` 是唯一中间表示**：decoder / filter / transformer / encoder 四方共用，禁止在其上再摞第二层中间模型。
-4. **backend 只认 `(service string, payload []byte)`**，对协议一无所知；协议转换全在 handler 内完成——这是「新增协议不改已有代码」的前提。
+4. **backend 只认 `(service string) → (net.Conn, error)`**，对协议一无所知，只负责借出后端连接；协议 IO（写请求帧 + 读响应帧）全由 transformer 在连接上完成——这是「新增协议不改已有代码」的前提。
 5. **路由与负载均衡两级映射**：filter 定「请求→服务」，backend 定「服务→实例」。拆开是为重试时换实例不重跑 filter 链（避免重复鉴权、重复扣配额）。
 6. **一条 conn 一个 goroutine，filter 对象全局共享**，filter 内部状态须自保并发安全。
-7. **`Call` / 连接池 / transformer 三者绑定演进**：长连接复用需要协议边界，协议边界由 transformer 定义，而 backend 对协议一无所知——连接池不能脱离 transformer 先做。现阶段（v01-v05）`Call` 用短连接 + half-close（`CloseWrite` + 读 EOF）；v06 transformer 落地后，`Call` + `ConnPool` + 协议帧定界一起升级为长连接版。
+7. **连接池 / transformer 职责分离**：backend 只管连接生命周期（借出、归还、池化），transformer 全权负责在连接上完成协议交互（写帧 + 读帧 + 反序列化）。长连接复用依赖协议帧定界，帧定界由 transformer 实现——因此 ConnPool 归还机制与 transformer 帧定界必须联动：v06 需为 `next` 加 release 回调（`func(service string) (net.Conn, func(error), error)`），transformer 不再自行关闭连接，由 handler 在 Transform 返回后通过 release 归还或丢弃。
 
 ## 已知待办（不影响结构，填肉时处理）
 
@@ -160,16 +166,23 @@ conn → Decode → message.Request → filters
 
 ## 下一步（v06 连接抽象）
 
-v05 已让路由和配置加载链路完整打通，v06 重点在协议转换真实落地 + 连接池：
+v05 已让路由和配置加载链路完整打通；v05→v06 准备阶段已完成接口重构（`Call` 改为只借连接、`Transformer.Transform` 合并为在连接上完成协议交互）。v06 重点在连接池填实 + 第一个真实 transformer + release 回调：
 
-1. ConnPool 落地（单连接版）
-   1. `backend/pool.go` 从骨架填实：连接获取/归还/拨号、idle 复用
-   2. `Call` 从短连接（dial → half-close → 读 EOF）升级为从池中取连接
-2. 第一个 transformer 真实实现
-   1. 协议帧定界（替代 half-close），transformer 负责序列化/反序列化协议帧
+1. ConnPool 落地（多连接 + 失效检测）
+   1. `backend/pool.go` 从骨架填实：`NewConnPool(addr, maxIdle, dialTimeout)` / `Get`（从 idle 取连接并做失效检测，坏连接丢弃重取；无空闲则 Dial）/ `Put`（归还；池满则关闭）/ `Close`
+   2. 失效检测：`Get` 取出空闲连接后，用零字节 `Read` + 极短 deadline 探测对端是否已关闭（RST / EOF），不可用则丢弃并继续取下一条或 Dial 新建
+   3. 配置字段：`ServiceRef` 新增 `MaxIdle`（空闲连接上限，默认 4）、`DialTimeout`（拨号超时，默认 3s）
+   4. `NewBManager` 为每个 Instance 初始化 pool
+   5. `Call` 从每次 Dial 改为从 pool 取连接
+2. release 回调
+   1. `next` 签名从 `func(service) (net.Conn, error)` 升级为 `func(service) (net.Conn, func(error), error)`
+   2. handler 在 `Transform` 返回后调 `release(err)`，由 backend 决定归还池还是关闭坏连接
+   3. transformer 去掉 `defer conn.Close()`，不再自行管理连接生命周期
+3. 第一个 transformer 真实实现
+   1. 协议帧定界（替代 half-close），transformer 在连接上完成写请求帧 + 读响应帧 + 反序列化
    2. `Process` 中 transformer 选择从硬编码 `"testT"` 改为配置驱动（按 service 或全局配置选取）
-3. Call + ConnPool + 协议帧定界三者联动
-   1. 长连接复用依赖协议边界，协议边界由 transformer 定义——三者必须一起升级
-4. 测试
+4. fakebackend 升级
+   1. 从裸字节 echo（half-close 定界）升级为对应协议的帧处理
+5. 测试
    1. 连接池单元测试（获取/归还/超限/失效）
-   2. testbed 验证长连接复用
+   2. testbed 验证长连接复用（同一条后端连接服务多次请求）
