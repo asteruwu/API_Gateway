@@ -79,3 +79,22 @@ func validateServiceInstances(services []ServiceRef) []error {
 	return errs
 }
 
+// validatePoolConfig 校验网关级连接池配置：零值表示使用默认值，负数与自相矛盾的取值视为非法
+func validatePoolConfig(cfg PoolConfig) []error {
+	var errs []error
+	if cfg.MaxConn < 0 {
+		errs = append(errs, fmt.Errorf("%w: pool.max_conn must not be negative", gerrors.ErrInvalidPoolConfig))
+	}
+	if cfg.MinIdle < 0 {
+		errs = append(errs, fmt.Errorf("%w: pool.min_idle must not be negative", gerrors.ErrInvalidPoolConfig))
+	}
+	if cfg.MaxConn > 0 && cfg.MinIdle > cfg.MaxConn {
+		errs = append(errs, fmt.Errorf("%w: pool.min_idle %d exceeds max_conn %d",
+			gerrors.ErrInvalidPoolConfig, cfg.MinIdle, cfg.MaxConn))
+	}
+	if cfg.DialTimeout < 0 || cfg.BorrowTimeout < 0 || cfg.IdleTimeout < 0 || cfg.WaitTimeout < 0 {
+		errs = append(errs, fmt.Errorf("%w: pool durations must not be negative", gerrors.ErrInvalidPoolConfig))
+	}
+	return errs
+}
+

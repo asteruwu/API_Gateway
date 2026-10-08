@@ -28,3 +28,30 @@ const DefaultHTTPProto = "HTTP/1.1"
 const DefaultErrorContentType = "text/plain; charset=utf-8"
 
 // ===== backend 后端层 =====
+
+// DefaultPoolMaxConn 连接池全局最大连接数（idle + active）
+const DefaultPoolMaxConn = 64
+
+// DefaultPoolMinIdle 连接池最小空闲连接数，reaper 预热到底线
+const DefaultPoolMinIdle = 4
+
+// DefaultPoolDialTimeout 连接池拨号超时
+const DefaultPoolDialTimeout = 3 * time.Second
+
+// DefaultPoolBorrowTimeout 连接借出超时，持有超过该时长视为故障强制关闭
+const DefaultPoolBorrowTimeout = 10 * time.Second
+
+// DefaultPoolIdleTimeout 空闲连接超时，超过回收但不低于 MinIdle
+const DefaultPoolIdleTimeout = 60 * time.Second
+
+// DefaultPoolWaitTimeout 池满时等待可用连接的最长时间
+const DefaultPoolWaitTimeout = 5 * time.Second
+
+// DefaultPoolProbeTimeout 借出前失效探测的读超时
+const DefaultPoolProbeTimeout = 10 * time.Millisecond
+
+// DefaultPoolReapIntervalMin reaper 扫描间隔下限
+const DefaultPoolReapIntervalMin = 100 * time.Millisecond
+
+// DefaultPoolReapIntervalMax reaper 扫描间隔上限
+const DefaultPoolReapIntervalMax = 30 * time.Second

@@ -12,6 +12,7 @@ type GatewayConfig struct {
 	Decoder     DecoderConfig `yaml:"decoder"`
 	Encoder     EncoderConfig `yaml:"encoder"`
 	Transformer PluginSet     `yaml:"transformer"`
+	Pool        PoolConfig    `yaml:"pool"`
 }
 
 type PluginSet struct {

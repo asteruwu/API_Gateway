@@ -31,6 +31,9 @@ var (
 	// ErrFilterConfigNotFound PluginSet.Enabled 声明了某个名字要启用，
 	// 但 PluginSet.Configs 里找不到同名配置
 	ErrFilterConfigNotFound = errors.New("builder: enabled filter has no matching config")
+
+	// ErrInvalidPoolConfig 连接池配置非法（负数或自相矛盾的取值）
+	ErrInvalidPoolConfig = errors.New("builder: invalid pool config")
 )
 
 // connector errors
@@ -120,4 +123,7 @@ var (
 
 	// ErrPoolExhausted 连接池无可用连接
 	ErrPoolExhausted = errors.New("backend: connection pool exhausted")
+
+	// ErrPoolClosed 连接池已关闭
+	ErrPoolClosed = errors.New("backend: connection pool closed")
 )

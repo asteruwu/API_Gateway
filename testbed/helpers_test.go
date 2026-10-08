@@ -38,6 +38,7 @@ func startGateway(t *testing.T, cfg *builder.Config) {
 		cfg.Handler.Transformer = defaultTestTransformerConfig()
 	}
 	bm := backend.NewBManager(cfg.Backend)
+	t.Cleanup(func() { _ = bm.Close() })
 	hdl, err := handler.NewHandler(cfg.Handler, bm.Call)
 	if err != nil {
 		t.Fatalf("build handler: %v", err)

@@ -17,3 +17,10 @@ gateway:
       - testT
     configs:
       testT: {}
+  pool:
+    max_conn: 64
+    min_idle: 4
+    dial_timeout: 3s
+    borrow_timeout: 10s
+    idle_timeout: 60s
+    wait_timeout: 5s

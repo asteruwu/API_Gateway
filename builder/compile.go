@@ -19,6 +19,8 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 	service := flattenServices(platforms)
 	errs = append(errs, validateServiceInstances(service)...)
 
+	errs = append(errs, validatePoolConfig(gw.Pool)...)
+
 	tcpFilters, tcpErrs := assembleEnabledList(gw.TCPFilters)
 	errs = append(errs, tcpErrs...)
 
@@ -47,6 +49,7 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 		},
 		Backend: BackendConfig{
 			Service: service,
+			Pool:    gw.Pool,
 		},
 	}, nil
 }

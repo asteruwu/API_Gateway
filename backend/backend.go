@@ -3,6 +3,7 @@ package backend
 import (
 	"API_Gateway/builder"
 	gerrors "API_Gateway/pkg/errors"
+	"errors"
 	"log"
 	"net"
 )
@@ -12,10 +13,9 @@ type BManager struct {
 }
 
 func NewBManager(cfg builder.BackendConfig) *BManager {
-	svc := cfg.Service
 	svcMap := make(map[string]*Service)
 	return &BManager{
-		service: buildService(svc, svcMap),
+		service: buildService(cfg.Service, cfg.Pool, svcMap),
 	}
 }
 
@@ -36,14 +36,26 @@ func (b *BManager) Call(service string) (net.Conn, error) {
 		return nil, gerrors.ErrNoInstance
 	}
 
-	conn, err := net.Dial("tcp", svc.instances[0].addr) // 先用单实例
+	conn, err := svc.instances[0].pool.Get() // 先用单实例
 	if err != nil {
 		return nil, err
 	}
 	return conn, nil
 }
 
-func buildService(svc []builder.ServiceRef, svcMap map[string]*Service) map[string]*Service {
+func (b *BManager) Close() error {
+	var errs []error
+	for _, svc := range b.service {
+		for _, inst := range svc.instances {
+			if inst.pool != nil {
+				errs = append(errs, inst.pool.Close())
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func buildService(svc []builder.ServiceRef, poolCfg builder.PoolConfig, svcMap map[string]*Service) map[string]*Service {
 	if svc == nil {
 		return nil
 	}
@@ -52,6 +64,7 @@ func buildService(svc []builder.ServiceRef, svcMap map[string]*Service) map[stri
 		for _, inst := range s.Instances {
 			instances = append(instances, &Instance{
 				addr: inst.Addr,
+				pool: NewConnPool(inst.Addr, poolCfg),
 			})
 		}
 		svcMap[s.Name] = &Service{

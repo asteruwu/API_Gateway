@@ -18,8 +18,8 @@ func (t *TestTransformer) Transform(req *message.Request, conn net.Conn) (*messa
 	if _, err := conn.Write(req.Body); err != nil {
 		return nil, err
 	}
-	if tc, ok := conn.(*net.TCPConn); ok {
-		if err := tc.CloseWrite(); err != nil {
+	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+		if err := cw.CloseWrite(); err != nil {
 			return nil, err
 		}
 	}

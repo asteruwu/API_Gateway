@@ -168,12 +168,13 @@ clientConn → Decode → message.Request → filters
 
 v05 已让路由和配置加载链路完整打通；v05→v06 准备阶段已完成接口重构（`Call` 改为只借连接、`Transformer.Transform` 合并为在连接上完成协议交互）。v06 重点在连接池填实 + 第一个真实 transformer + release 回调：
 
-1. ConnPool 落地（多连接 + 失效检测）
-   1. `backend/pool.go` 从骨架填实：`NewConnPool(addr, maxIdle, dialTimeout)` / `Get`（从 idle 取连接并做失效检测，坏连接丢弃重取；无空闲则 Dial）/ `Put`（归还；池满则关闭）/ `Close`
-   2. 失效检测：`Get` 取出空闲连接后，用零字节 `Read` + 极短 deadline 探测对端是否已关闭（RST / EOF），不可用则丢弃并继续取下一条或 Dial 新建
-   3. 配置字段：`ServiceRef` 新增 `MaxIdle`（空闲连接上限，默认 4）、`DialTimeout`（拨号超时，默认 3s）
-   4. `NewBManager` 为每个 Instance 初始化 pool
-   5. `Call` 从每次 Dial 改为从 pool 取连接
+1. ConnPool 落地（多连接 + 失效检测 + 超时回收）
+   1. `backend/pool.go` 从骨架填实：`NewConnPool(addr, builder.PoolConfig)`；`Get`（从 idle 取连接，复用前做失效探测，坏连接丢弃重取；无空闲则取令牌 Dial，池满阻塞等待）/ `Put`（归还到 idle）/ `Close`（停 reaper 并关闭全部空闲连接）；`discard` 为池内唯一关闭路径（`closeOnce` 幂等关闭 + 归还令牌）
+   2. 失效检测：`Get` 取出空闲连接后，用零字节 `Read` + 极短 deadline 探测对端是否已关闭（RST / EOF / 残留字节），不可用则丢弃并继续取下一条或 Dial 新建
+   3. 容量与超时：全局上限 `MaxConn`（idle + active，由令牌 `slots` 约束、池满阻塞等待 `WaitTimeout`）、空闲底线 `MinIdle`（预热）、`BorrowTimeout`（借出过久判为故障强制关闭）、`IdleTimeout`（空闲过久回收但不低于 `MinIdle`）；池级 reaper 协程定时扫描，生命周期随池创建/关闭
+   4. 配置字段：编写态 `gateway.yaml` 的 `gateway.pool`（`max_conn` / `min_idle` / `dial_timeout` / `borrow_timeout` / `idle_timeout` / `wait_timeout`），`Compile` 派生进 `BackendConfig.Pool` 并校验，零值由 backend 运行时补默认；不再使用 `MaxIdle`，空闲总量交由 `MaxConn` 约束
+   5. `NewBManager` 为每个 Instance 初始化 pool
+   6. `Call` 从每次 Dial 改为从 pool 取连接（真正复用需等 release 回调落地）
 2. release 回调
    1. `next` 签名从 `func(service) (net.Conn, error)` 升级为 `func(service) (net.Conn, func(error), error)`
    2. handler 在 `Transform` 返回后调 `release(err)`，由 backend 决定归还池还是关闭坏连接

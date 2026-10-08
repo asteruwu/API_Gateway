@@ -1,5 +1,7 @@
 package builder
 
+import "time"
+
 // 运行态配置
 
 type Config struct {
@@ -54,6 +56,7 @@ type TestTransformerConfig struct{}
 
 type BackendConfig struct {
 	Service []ServiceRef
+	Pool    PoolConfig
 }
 
 type ServiceRef struct {
@@ -74,4 +77,13 @@ type DecoderConfig struct {
 
 type EncoderConfig struct {
 	// 编码器配置
+}
+
+type PoolConfig struct {
+	MaxConn       int           `yaml:"max_conn"`
+	MinIdle       int           `yaml:"min_idle"`
+	DialTimeout   time.Duration `yaml:"dial_timeout"`
+	BorrowTimeout time.Duration `yaml:"borrow_timeout"`
+	IdleTimeout   time.Duration `yaml:"idle_timeout"`
+	WaitTimeout   time.Duration `yaml:"wait_timeout"`
 }
