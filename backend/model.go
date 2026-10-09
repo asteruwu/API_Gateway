@@ -1,6 +1,7 @@
 package backend
 
 import (
+	cp "API_Gateway/backend/pool"
 	"net"
 	"sync/atomic"
 )
@@ -18,5 +19,5 @@ type Service struct {
 type Instance struct {
 	addr    string
 	healthy atomic.Bool
-	pool    *ConnPool
+	pool    *cp.ConnPool
 }

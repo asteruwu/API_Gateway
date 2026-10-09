@@ -47,9 +47,6 @@ const DefaultPoolIdleTimeout = 60 * time.Second
 // DefaultPoolWaitTimeout 池满时等待可用连接的最长时间
 const DefaultPoolWaitTimeout = 5 * time.Second
 
-// DefaultPoolProbeTimeout 借出前失效探测的读超时
-const DefaultPoolProbeTimeout = 10 * time.Millisecond
-
 // DefaultPoolReapIntervalMin reaper 扫描间隔下限
 const DefaultPoolReapIntervalMin = 100 * time.Millisecond
 

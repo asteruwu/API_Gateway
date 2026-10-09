@@ -1,6 +1,7 @@
 package backend
 
 import (
+	cp "API_Gateway/backend/pool"
 	"API_Gateway/builder"
 	gerrors "API_Gateway/pkg/errors"
 	"errors"
@@ -64,7 +65,7 @@ func buildService(svc []builder.ServiceRef, poolCfg builder.PoolConfig, svcMap m
 		for _, inst := range s.Instances {
 			instances = append(instances, &Instance{
 				addr: inst.Addr,
-				pool: NewConnPool(inst.Addr, poolCfg),
+				pool: cp.NewConnPool(inst.Addr, poolCfg),
 			})
 		}
 		svcMap[s.Name] = &Service{
