@@ -35,19 +35,20 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
 | `handler/message/` | **网关唯一的中间表示**（统一 HTTP 模型），叶子包，不依赖任何包 | `Request`、`Response` |
 | `handler/http_filter/` | 请求级过滤器：鉴权、限流、路由。可放行或中断并直接产出响应 | `HTTPFilter` |
 | `handler/transformer/` | 协议转换，每个实现代表一种后端协议。拿到后端连接后全权负责写请求帧、读响应帧、反序列化，协议细节全部封在实现内部 | `Transformer` |
-| `backend/` | 服务注册表、负载均衡选实例、**连接池管理（借出/归还）**，不接触协议字节 | `BManager`、`Service`、`Instance`、`LoadBalancer`、`ConnPool` |
+| `backend/` | 服务注册表、负载均衡选实例、连接池管理（借出/归还），不接触协议字节 | `BManager`、`Service`、`Instance`、`LoadBalancer` |
+| `backend/pool/` | **连接池实现**：容量/空闲/超时管理、失效探测、reaper 回收；不碰协议 | `ConnPool`、`PoolConn` |
 
 依赖方向单向无环：`main → {connector, handler, backend}`，三个顶层模块**互不 import**，靠 main.go 注入函数值接线；`message` 是被 `http_filter` 和 `transformer` 共享的叶子包。
 
 ### 当前状态
 
-**路由能力已落地，配置加载链路完整打通（v00-v05 已完成）。** 全部包和接口已就位，`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）。
+**v00-v06 已完成**（路由/配置链路 + 连接池 + release 回调 + 帧定界 transformer）。全部包和接口已就位，`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）。
 
 相对 v04 的关键变化：Router 真实实现（最长前缀匹配 + Host 分发 + Method 守卫，`req.Service` 传递路由结果）；配置加载链路完整打通（`loader.go` 读 YAML → `hydrate.go` 类型水合 → `compile.go` 编译为运行态），`Build(configDir)` 串联全流程，支持多租户 `gateway.yaml` + `platform.yaml` 双文件配置；`ErrorResponse` 新增 404 映射；通用工具函数抽取到 `pkg/tools/`（`ToInt`、`StringsOverlap`、`StringsContain`、`LoadYAML`）。
 
-相对 v05 的关键变化（v06 准备重构）：`Backend.Call` 签名从 `(service, payload) → ([]byte, error)` 改为 `(service) → (net.Conn, error)`，backend 不再收发协议字节，只负责借出连接；`Transformer` 接口从 `Transform`/`Restore` 纯序列化双方法合并为 `Transform(req, conn) → (*Response, error)`，拿到后端连接后全权完成协议 IO；`handler.Process` 编排顺序相应调整为：先 `next(service)` 借连接，再 `transformer.Transform(req, conn)` 做协议交互。`TestTransformer` 已填实为透传（write → half-close → readAll）。
+相对 v05 的关键变化（v06 连接抽象）：连接池独立成 `backend/pool/` 子包并填实——`Call` 从池借出（`net.Dial` → `pool.Get`）、`next` 升级为 `(service) (net.Conn, func(error), error)`、handler 在 `Transform` 返回后 `release(err)`（成功 `Put`、失败关连接）；第一个 transformer 真实实现改为**配置驱动的帧定界协议**（4 字节长度前缀 + `io.ReadFull`，替换 half-close），并去掉 `defer conn.Close()`；transformer 按 service 绑定（`platform.yaml` 的 `transformer:` → `Compile` 反向聚合 + 校验）；fakebackend 同步升级为帧循环，支持同一后端连接连续服务多请求。
 
-仍保留的边界：transformer 选择硬编码为 `"testT"`，v06 落地协议转换后改为配置驱动；`TestTransformer.Transform` 内 `defer conn.Close()` 在 ConnPool 落地后需改为 release 回调。
+仍保留的边界：`Call` 写死 `instances[0]`，负载均衡未接（`LoadBalancer` 接口待用）；transformer 帧协议为长度前缀的**模拟协议**（非真实 gRPC/MCP）；连接池下一版把等待/唤醒升级为 channel + select（见「下一步」）。
 
 **接手前请务必先读「架构约定」一节**——那是反复讨论后定下的边界（模块间怎么解耦、协议知识关在哪、连接池归谁、响应从哪出去），从代码本身看不出来，但改动时必须遵守。「已知待办」记录了已识别但尚未处理的问题，不必当成 bug 重复上报。
 
@@ -81,7 +82,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
 
 ## 当前进度
 
-> 最后更新：2026-09-28　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
+> 最后更新：2026-10-10　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
 
 - [x] **v00 项目初始化** —— 完成，数据流已闭合
   - [x] `main.go`：按逆序完成编排（backend → handler → connector）
@@ -119,7 +120,13 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
   - [x] 未命中路由：`ErrRouteNotFound` + `ErrorResponse` 映射 404，业务错误写回后 keep-alive 继续
   - [x] 通用工具抽取：`pkg/tools/`（`conv.go` / `slice.go` / `yaml.go`）
   - [x] 测试：`router_test.go` 五个单元测试（域名+路径联合匹配、未命中、方法守卫、特定域名优先、规则校验）+ `compile_test.go` 十三个编译测试 + testbed `route_test.go` 两个端到端用例（路径分发 + 多租户 Host 分发）
-- [ ] v06 连接抽象
+- [x] **v06 连接抽象** —— 完成，连接池落地 + release 回调 + 帧定界 transformer + 复用验证
+  - [x] `backend/pool/` 子包：`ConnPool`（`MaxConn` 令牌 + `MinIdle` 预热 + 借出/空闲超时 + reaper 定时回收 + `discard` 唯一关闭路径）、`probe.go`（非阻塞零字节读失效探测）、`reaper.go`（超时回收/过期回收/保底探活/预热）
+  - [x] release 回调：`next` 升级为 `(service) (net.Conn, func(error), error)`；handler `defer release(err)`；成功 `Put`、失败 `Close`
+  - [x] 帧定界 transformer：4 字节长度前缀 + `io.ReadFull`，替换 half-close 并去掉 `defer conn.Close()`；transformer 从硬编码 `"testT"` 改为按 service 配置驱动（`Compile` 反向聚合 + 校验）
+  - [x] fakebackend 从裸字节 echo 升级为帧循环，一条后端连接连续服务多请求
+  - [x] 配置：`gateway.pool` 解析/校验/派生；每个 service 必须绑定 transformer（编译期校验）
+  - [x] 测试：`backend/pool/pool_test.go`（借出/复用/超限/失效/关闭/并发）+ `testbed/reuse_test.go`（`MaxConn=1` 断言后端仅建 1 条连接）
 - [ ] v07 安全认证
 - [ ] v08 管道细化
 - [ ] v09 协议扩展
@@ -142,7 +149,7 @@ clientConn → Decode → message.Request → filters
 4. **backend 只认 `(service string) → (net.Conn, error)`**，对协议一无所知，只负责借出后端连接；协议 IO（写请求帧 + 读响应帧）全由 transformer 在连接上完成——这是「新增协议不改已有代码」的前提。
 5. **路由与负载均衡两级映射**：filter 定「请求→服务」，backend 定「服务→实例」。拆开是为重试时换实例不重跑 filter 链（避免重复鉴权、重复扣配额）。
 6. **一条 conn 一个 goroutine，filter 对象全局共享**，filter 内部状态须自保并发安全。
-7. **连接池 / transformer 职责分离**：backend 只管连接生命周期（借出、归还、池化），transformer 全权负责在连接上完成协议交互（写帧 + 读帧 + 反序列化）。长连接复用依赖协议帧定界，帧定界由 transformer 实现——因此 ConnPool 归还机制与 transformer 帧定界必须联动：v06 需为 `next` 加 release 回调（`func(service string) (net.Conn, func(error), error)`），transformer 不再自行关闭连接，由 handler 在 Transform 返回后通过 release 归还或丢弃。
+7. **连接池 / transformer 职责分离**：backend 只管连接生命周期（借出、归还、池化），transformer 全权负责在连接上完成协议交互（写帧 + 读帧 + 反序列化）。长连接复用依赖协议帧定界，帧定界由 transformer 实现——因此 ConnPool 归还机制与 transformer 帧定界必须联动：`next` 已加 release 回调（`func(service string) (net.Conn, func(error), error)`），transformer 不再自行关闭连接，由 handler 在 Transform 返回后通过 release 归还或丢弃。
 
 ## 已知待办（不影响结构，填肉时处理）
 
@@ -161,29 +168,24 @@ clientConn → Decode → message.Request → filters
 - 方向：集成 testbed（`go test` 自动化），不依赖手动脚本/独立二进制。
 - 假后端作为测试 helper（goroutine 监听真实端口），行为/协议可配置，越易配置越好。
 - 网关通过配置注入拿到后端实例地址，不硬编码——测试代码启动假后端、构造 `builder.Config`、用构造函数组装网关，`main.go` 不被测试侵入。
-- 假后端协议和 transformer 绑定演进：现阶段裸字节 echo（half-close 定界），v06 起挂 gRPC handler（协议帧定界）。
+- 假后端协议和 transformer 绑定演进：现为 **4 字节长度前缀帧**（模拟协议，fakebackend 与 transformer 对称实现）；后续接真实协议（gRPC/MCP）时替换实现。
 - 行为模式先做 `echo` + `fixed`，`error`/`delay` 等做到重试/熔断（v03/v06）时再加。
 
-## 下一步（v06 连接抽象）
+## 下一步（连接池升级：channel + select）
 
-v05 已让路由和配置加载链路完整打通；v05→v06 准备阶段已完成接口重构（`Call` 改为只借连接、`Transformer.Transform` 合并为在连接上完成协议交互）。v06 重点在连接池填实 + 第一个真实 transformer + release 回调：
+v06 已让连接池落地并跑通长连接复用。当前池用 `slots chan struct{}`（容量令牌）+ `idle []*PoolConn` 切片 + `sync.Cond`/`Broadcast` 做「池满等待 + 空闲唤醒」。`Broadcast` 会**惊群**（一次唤醒全部等待者），在热点池 + 突发流量下放大 CPU/调度/GC 开销，且等待者数量不受池容量约束。下一步把等待/唤醒升级为 **channel + select**，去掉 `Cond`：
 
-1. ConnPool 落地（多连接 + 失效检测 + 超时回收）
-   1. `backend/pool.go` 从骨架填实：`NewConnPool(addr, builder.PoolConfig)`；`Get`（从 idle 取连接，复用前做失效探测，坏连接丢弃重取；无空闲则取令牌 Dial，池满阻塞等待）/ `Put`（归还到 idle）/ `Close`（停 reaper 并关闭全部空闲连接）；`discard` 为池内唯一关闭路径（`closeOnce` 幂等关闭 + 归还令牌）
-   2. 失效检测：`Get` 取出空闲连接后，用零字节 `Read` + 极短 deadline 探测对端是否已关闭（RST / EOF / 残留字节），不可用则丢弃并继续取下一条或 Dial 新建
-   3. 容量与超时：全局上限 `MaxConn`（idle + active，由令牌 `slots` 约束、池满阻塞等待 `WaitTimeout`）、空闲底线 `MinIdle`（预热）、`BorrowTimeout`（借出过久判为故障强制关闭）、`IdleTimeout`（空闲过久回收但不低于 `MinIdle`）；池级 reaper 协程定时扫描，生命周期随池创建/关闭
-   4. 配置字段：编写态 `gateway.yaml` 的 `gateway.pool`（`max_conn` / `min_idle` / `dial_timeout` / `borrow_timeout` / `idle_timeout` / `wait_timeout`），`Compile` 派生进 `BackendConfig.Pool` 并校验，零值由 backend 运行时补默认；不再使用 `MaxIdle`，空闲总量交由 `MaxConn` 约束
-   5. `NewBManager` 为每个 Instance 初始化 pool
-   6. `Call` 从每次 Dial 改为从 pool 取连接（真正复用需等 release 回调落地）
-2. release 回调
-   1. `next` 签名从 `func(service) (net.Conn, error)` 升级为 `func(service) (net.Conn, func(error), error)`
-   2. handler 在 `Transform` 返回后调 `release(err)`，由 backend 决定归还池还是关闭坏连接
-   3. transformer 去掉 `defer conn.Close()`，不再自行管理连接生命周期
-3. 第一个 transformer 真实实现
-   1. 协议帧定界（替代 half-close），transformer 在连接上完成写请求帧 + 读响应帧 + 反序列化
-   2. `Process` 中 transformer 选择从硬编码 `"testT"` 改为配置驱动（按 service 或全局配置选取）
-4. fakebackend 升级
-   1. 从裸字节 echo（half-close 定界）升级为对应协议的帧处理
-5. 测试
-   1. 连接池单元测试（获取/归还/超限/失效）
-   2. testbed 验证长连接复用（同一条后端连接服务多次请求）
+1. 目标
+   1. 消除惊群：资源归还只唤醒一个等待者；超时在等待者本地处理，不跨等待者广播
+   2. 用 channel 的阻塞队列语义替代手写等待队列 + `sync.Cond`
+   3. 对外 API（`Get`/`Put`/`Close`/`PoolConn`）与 `backend`/`builder` 保持不变
+2. 设计（待细化）
+   1. `idle` 由切片改为 `idle chan *PoolConn`（channel 装资源），容量 = `MaxConn`；`Get` 用 `select { case c := <-idle: ...; case <-slots: Dial; case <-timer.C: ErrPoolExhausted; case <-done: ErrPoolClosed }`
+   2. `Put` 非阻塞 send 回 `idle`（满 / 已关闭则关连接并归还令牌）；令牌释放作为「可新建」的唤醒信号
+   3. 超时/取消改用等待者本地 `time.NewTimer(remaining)`，移除 `time.AfterFunc` 广播回调
+3. 连带改动
+   1. reaper 无法对 channel 按下标 peek：`reapExpiredIdle` / `probeIdle` / 预热需改为「锁内排空 idle → 按 `idleSince` 过滤 → 关死的 / 放回活的」，并注意与并发 `Get`/`Put` 的交互
+4. 影响范围与前置
+   1. 主要改 `backend/pool/pool.go` 与 `backend/pool/reaper.go`（约 200–270 行），`probe.go` 不动
+   2. 属优化、不在关键路径；建议独立分支（如 `v06/connPool-channel`）进行
+   3. 以现有 `backend/pool/pool_test.go` 为行为契约，重构前后全绿（含 `-race`）
