@@ -128,7 +128,11 @@ func (p *ConnPool) Get() (*PoolConn, error) {
 			p.mu.Unlock()
 			return nil, gerrors.ErrPoolExhausted
 		}
-		timer := time.AfterFunc(remaining, func() { p.cond.Broadcast() })
+		timer := time.AfterFunc(remaining, func() {
+			p.mu.Lock()
+			p.cond.Broadcast()
+			p.mu.Unlock()
+		})
 		p.cond.Wait()
 		timer.Stop()
 	}
@@ -172,7 +176,6 @@ func (p *ConnPool) discard(pc *PoolConn) {
 		p.mu.Unlock()
 
 		p.releaseSlot()
-		p.cond.Broadcast()
 	})
 }
 
@@ -242,14 +245,15 @@ func (p *ConnPool) releaseSlot() {
 	case p.slots <- struct{}{}:
 	default:
 	}
+	p.cond.Broadcast()
 }
 
 func withPoolDefaults(cfg builder.PoolConfig) builder.PoolConfig {
 	if cfg.MaxConn <= 0 {
 		cfg.MaxConn = gconst.DefaultPoolMaxConn
 	}
-	if cfg.MinIdle < 0 {
-		cfg.MinIdle = 0
+	if cfg.MinIdle <= 0 {
+		cfg.MinIdle = gconst.DefaultPoolMinIdle
 	}
 	if cfg.MinIdle > cfg.MaxConn {
 		cfg.MinIdle = cfg.MaxConn
