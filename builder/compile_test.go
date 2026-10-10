@@ -8,16 +8,23 @@ import (
 )
 
 func TestCompileSuccess(t *testing.T) {
-	gw := GatewayConfig{Port: "6666"}
+	gw := GatewayConfig{
+		Port: "6666",
+		Transformer: PluginSet{
+			Enabled: []string{"testT"},
+			Configs: map[string]any{"testT": TestTransformerConfig{}},
+		},
+	}
 	platforms := []PlatformConfig{
 		{
 			Name: "shopA",
 			Host: []string{"api.shopA.com"},
 			Service: []ServiceConfig{
 				{
-					Name:      "order",
-					Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}},
-					Routes:    []RouteRuleConfig{{PathPrefix: "/orders", Methods: []string{"POST"}}},
+					Name:        "order",
+					Transformer: "testT",
+					Instances:   []InstanceConfig{{Addr: "127.0.0.1:8081"}},
+					Routes:      []RouteRuleConfig{{PathPrefix: "/orders", Methods: []string{"POST"}}},
 				},
 			},
 		},
@@ -26,9 +33,10 @@ func TestCompileSuccess(t *testing.T) {
 			Host: []string{"api.shopB.com"},
 			Service: []ServiceConfig{
 				{
-					Name:      "order", // 与 shopA 下的 order 同名，不同 platform，不应冲突
-					Instances: []InstanceConfig{{Addr: "127.0.0.1:8091"}},
-					Routes:    []RouteRuleConfig{{PathPrefix: "/orders"}},
+					Name:        "order", // 与 shopA 下的 order 同名，不同 platform，不应冲突
+					Transformer: "testT",
+					Instances:   []InstanceConfig{{Addr: "127.0.0.1:8091"}},
+					Routes:      []RouteRuleConfig{{PathPrefix: "/orders"}},
 				},
 			},
 		},
@@ -114,11 +122,15 @@ func TestCompileDuplicateServiceNameWithinPlatform(t *testing.T) {
 
 func TestCompileServiceSameNameAcrossPlatformsAllowed(t *testing.T) {
 	// 不同 platform 下同名 service 合法（限定名不同），单独验证不应触发 ErrDuplicateServiceName
+	gw := GatewayConfig{Transformer: PluginSet{
+		Enabled: []string{"testT"},
+		Configs: map[string]any{"testT": TestTransformerConfig{}},
+	}}
 	platforms := []PlatformConfig{
-		{Name: "shopA", Service: []ServiceConfig{{Name: "order", Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}}}}},
-		{Name: "shopB", Service: []ServiceConfig{{Name: "order", Instances: []InstanceConfig{{Addr: "127.0.0.1:8091"}}}}},
+		{Name: "shopA", Service: []ServiceConfig{{Name: "order", Transformer: "testT", Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}}}}},
+		{Name: "shopB", Service: []ServiceConfig{{Name: "order", Transformer: "testT", Instances: []InstanceConfig{{Addr: "127.0.0.1:8091"}}}}},
 	}
-	if _, err := Compile(GatewayConfig{}, platforms); err != nil {
+	if _, err := Compile(gw, platforms); err != nil {
 		t.Errorf("unexpected err: %v", err)
 	}
 }
@@ -152,16 +164,20 @@ func TestCompileDuplicateRoute(t *testing.T) {
 
 func TestCompileRouteMethodPartitionAllowed(t *testing.T) {
 	// 同 host+path，但方法集合不重叠（GET vs POST 分流到不同服务），不应判定冲突
+	gw := GatewayConfig{Transformer: PluginSet{
+		Enabled: []string{"testT"},
+		Configs: map[string]any{"testT": TestTransformerConfig{}},
+	}}
 	platforms := []PlatformConfig{
 		{
 			Name: "shopA",
 			Service: []ServiceConfig{
-				{Name: "reader", Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}}, Routes: []RouteRuleConfig{{PathPrefix: "/orders", Methods: []string{"GET"}}}},
-				{Name: "writer", Instances: []InstanceConfig{{Addr: "127.0.0.1:8082"}}, Routes: []RouteRuleConfig{{PathPrefix: "/orders", Methods: []string{"POST"}}}},
+				{Name: "reader", Transformer: "testT", Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}}, Routes: []RouteRuleConfig{{PathPrefix: "/orders", Methods: []string{"GET"}}}},
+				{Name: "writer", Transformer: "testT", Instances: []InstanceConfig{{Addr: "127.0.0.1:8082"}}, Routes: []RouteRuleConfig{{PathPrefix: "/orders", Methods: []string{"POST"}}}},
 			},
 		},
 	}
-	if _, err := Compile(GatewayConfig{}, platforms); err != nil {
+	if _, err := Compile(gw, platforms); err != nil {
 		t.Errorf("unexpected err: %v", err)
 	}
 }
@@ -228,7 +244,7 @@ func TestCompilePluginSetEnabledMissingConfig(t *testing.T) {
 	}
 }
 
-func TestCompileTransformerSetAssembledAsMap(t *testing.T) {
+func TestCompileTransformerEnabledAssembledAsMap(t *testing.T) {
 	// transformer 是按名字查找的注册表（不是顺序敏感的链），装配结果应保留 name → config 映射，
 	// 未列入 Enabled 的 Configs 项不应出现
 	gw := GatewayConfig{
@@ -263,6 +279,65 @@ func TestCompileTransformerEnabledMissingConfig(t *testing.T) {
 	_, err := Compile(gw, nil)
 	if !errors.Is(err, gerrors.ErrFilterConfigNotFound) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrFilterConfigNotFound)
+	}
+}
+
+func TestCompileTransformerBindsServices(t *testing.T) {
+	// service 声明的 transformer 名应被反向聚合成该 transformer 的 Services 列表
+	gw := GatewayConfig{
+		Transformer: PluginSet{
+			Enabled: []string{"testT"},
+			Configs: map[string]any{"testT": TestTransformerConfig{}},
+		},
+	}
+	platforms := []PlatformConfig{
+		{Name: "shopA", Service: []ServiceConfig{
+			{Name: "order", Transformer: "testT", Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}}},
+			{Name: "user", Transformer: "testT", Instances: []InstanceConfig{{Addr: "127.0.0.1:8082"}}},
+		}},
+	}
+	cfg, err := Compile(gw, platforms)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	entry, ok := cfg.Handler.Transformer.Transformers["testT"]
+	if !ok {
+		t.Fatalf("transformers = %+v, want key %q", cfg.Handler.Transformer.Transformers, "testT")
+	}
+	if len(entry.Services) != 2 || entry.Services[0] != "shopA.order" || entry.Services[1] != "shopA.user" {
+		t.Errorf("services = %v, want [shopA.order shopA.user]", entry.Services)
+	}
+}
+
+func TestCompileServiceMissingTransformer(t *testing.T) {
+	// service 未声明 transformer，属编译期可确定的配置错误
+	platforms := []PlatformConfig{
+		{Name: "shopA", Service: []ServiceConfig{
+			{Name: "order", Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}}},
+		}},
+	}
+	_, err := Compile(GatewayConfig{}, platforms)
+	if !errors.Is(err, gerrors.ErrInvalidConfig) || !errors.Is(err, gerrors.ErrTransformerNotFound) {
+		t.Errorf("err = %v, want wrapping %v and %v", err, gerrors.ErrInvalidConfig, gerrors.ErrTransformerNotFound)
+	}
+}
+
+func TestCompileTransformerUnknownServiceRef(t *testing.T) {
+	// service 绑定了未启用的 transformer 名，属编译期可确定的配置错误
+	gw := GatewayConfig{
+		Transformer: PluginSet{
+			Enabled: []string{"testT"},
+			Configs: map[string]any{"testT": TestTransformerConfig{}},
+		},
+	}
+	platforms := []PlatformConfig{
+		{Name: "shopA", Service: []ServiceConfig{
+			{Name: "order", Transformer: "ghost", Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}}},
+		}},
+	}
+	_, err := Compile(gw, platforms)
+	if !errors.Is(err, gerrors.ErrInvalidConfig) || !errors.Is(err, gerrors.ErrTransformerNotFound) {
+		t.Errorf("err = %v, want wrapping %v and %v", err, gerrors.ErrInvalidConfig, gerrors.ErrTransformerNotFound)
 	}
 }
 

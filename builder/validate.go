@@ -3,8 +3,8 @@ package builder
 import (
 	"fmt"
 
-	"API_Gateway/pkg/tools"
 	gerrors "API_Gateway/pkg/errors"
+	"API_Gateway/pkg/tools"
 )
 
 // validatePlatformNames 校验 platform 名非空且全局唯一
@@ -79,6 +79,36 @@ func validateServiceInstances(services []ServiceRef) []error {
 	return errs
 }
 
+// validateTransformerRefs 校验 service 绑定的 transformer 名都已启用
+func validateTransformerRefs(set PluginSet, byTransformer map[string][]string) []error {
+	enabled := make(map[string]bool, len(set.Enabled))
+	for _, name := range set.Enabled {
+		enabled[name] = true
+	}
+
+	var errs []error
+	for name, services := range byTransformer {
+		if !enabled[name] {
+			errs = append(errs, fmt.Errorf("%w: services %v bind %q which is not enabled", gerrors.ErrTransformerNotFound, services, name))
+		}
+	}
+	return errs
+}
+
+// validateServiceTransformer 校验每个 service 都显式绑定了 transformer
+func validateServiceTransformer(platforms []PlatformConfig) []error {
+	var errs []error
+	for _, p := range platforms {
+		for i, s := range p.Service {
+			if s.Transformer == "" {
+				errs = append(errs, fmt.Errorf("%w: platform %q service[%d] %q has no transformer bound",
+					gerrors.ErrTransformerNotFound, p.Name, i, s.Name))
+			}
+		}
+	}
+	return errs
+}
+
 // validatePoolConfig 校验网关级连接池配置：零值表示使用默认值，负数与自相矛盾的取值视为非法
 func validatePoolConfig(cfg PoolConfig) []error {
 	var errs []error
@@ -97,4 +127,3 @@ func validatePoolConfig(cfg PoolConfig) []error {
 	}
 	return errs
 }
-

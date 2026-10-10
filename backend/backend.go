@@ -20,28 +20,38 @@ func NewBManager(cfg builder.BackendConfig) *BManager {
 	}
 }
 
-func (b *BManager) Call(service string) (net.Conn, error) {
+func (b *BManager) Call(service string) (net.Conn, func(error), error) {
 	// 0. 查表
 	// 1. lb 挑选实例
 	// 2. 连接池选取连接
-	// 3. 返回
+	// 3. 返回连接 + release 回调
 	var svc *Service
 	if s, ok := b.service[service]; !ok {
 		log.Println("[backend]service not exists")
-		return nil, gerrors.ErrServiceNotFound
+		return nil, nil, gerrors.ErrServiceNotFound
 	} else {
 		svc = s
 	}
 
 	if len(svc.instances) == 0 {
-		return nil, gerrors.ErrNoInstance
+		return nil, nil, gerrors.ErrNoInstance
 	}
 
-	conn, err := svc.instances[0].pool.Get() // 先用单实例
+	inst := svc.instances[0] // 先用单实例
+	pc, err := inst.pool.Get()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return conn, nil
+
+	// 构造 release 回调
+	release := func(err error) {
+		if err != nil {
+			_ = pc.Close()
+			return
+		}
+		inst.pool.Put(pc)
+	}
+	return pc, release, nil
 }
 
 func (b *BManager) Close() error {

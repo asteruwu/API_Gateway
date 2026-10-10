@@ -35,7 +35,11 @@ func startEchoBackend(t *testing.T) string {
 func startGateway(t *testing.T, cfg *builder.Config) {
 	t.Helper()
 	if len(cfg.Handler.Transformer.Transformers) == 0 {
-		cfg.Handler.Transformer = defaultTestTransformerConfig()
+		services := make([]string, 0, len(cfg.Backend.Service))
+		for _, s := range cfg.Backend.Service {
+			services = append(services, s.Name)
+		}
+		cfg.Handler.Transformer = defaultTestTransformerConfig(services...)
 	}
 	bm := backend.NewBManager(cfg.Backend)
 	t.Cleanup(func() { _ = bm.Close() })
@@ -98,11 +102,13 @@ func routerConfig(hosts []string, rules map[string][]string) builder.RouterConfi
 	return builder.RouterConfig{Rules: ruleList}
 }
 
-// defaultTestTransformerConfig 返回一份启用了占位 transformer（name 固定为
-// "testT"，与 handler.Process 里硬编码查找的 key 保持一致）的运行态配置。
-func defaultTestTransformerConfig() builder.TransformerConfig {
+// defaultTestTransformerConfig 返回一份启用了模拟帧 transformer 的运行态配置，
+// 并把它绑定到给定的 service 上（测试里所有后端服务共用这一个 transformer）。
+func defaultTestTransformerConfig(services ...string) builder.TransformerConfig {
 	return builder.TransformerConfig{
-		Transformers: map[string]any{"testT": builder.TestTransformerConfig{}},
+		Transformers: map[string]builder.TransformerEntry{
+			"testT": {Config: builder.TestTransformerConfig{}, Services: services},
+		},
 	}
 }
 

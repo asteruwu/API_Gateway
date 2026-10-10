@@ -5,6 +5,7 @@ platforms:
       - shopA.com
     service:
       - name: order
+        transformer: testT
         instances:
           - addr: "127.0.0.1:8081"
         routes:
@@ -12,6 +13,7 @@ platforms:
             methods: [POST, PUT]
           - path_prefix: /orders/refund
       - name: user
+        transformer: testT
         instances:
           - addr: "127.0.0.1:8082"
         routes:
@@ -21,6 +23,7 @@ platforms:
       - api.shopB.com
     service:
       - name: order
+        transformer: testT
         instances:
           - addr: "127.0.0.1:8091"
         routes:

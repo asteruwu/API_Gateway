@@ -99,6 +99,10 @@ var (
 
 	// ErrInvalidRouterRule 路由规则自身不合法
 	ErrInvalidRouterRule = errors.New("handler: invalid router rule")
+
+	// ErrTransformerNotFound 请求命中的 service 未绑定 transformer 且无默认值可回退，
+	// 或配置引用了未启用的 transformer 名
+	ErrTransformerNotFound = errors.New("handler: transformer not found")
 )
 
 // backend errors

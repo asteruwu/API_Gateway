@@ -7,7 +7,7 @@ import (
 )
 
 type Backend interface {
-	Call(service string) (net.Conn, error)
+	Call(service string) (net.Conn, func(error), error)
 }
 
 type Service struct {

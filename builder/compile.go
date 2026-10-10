@@ -30,6 +30,10 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 	transformers, transformerErrs := assembleEnabledMap(gw.Transformer)
 	errs = append(errs, transformerErrs...)
 
+	byTransformer := groupServicesByTransformer(platforms)
+	errs = append(errs, validateTransformerRefs(gw.Transformer, byTransformer)...)
+	errs = append(errs, validateServiceTransformer(platforms)...)
+
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("%w: %w", gerrors.ErrInvalidConfig, errors.Join(errs...))
 	}
@@ -42,10 +46,12 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 			Filters: tcpFilters,
 		},
 		Handler: HandlerConfig{
-			Decoder:     gw.Decoder,
-			Encoder:     gw.Encoder,
-			Filter:      HTTPFilterConfig{Filters: httpFilters},
-			Transformer: TransformerConfig{Transformers: transformers},
+			Decoder: gw.Decoder,
+			Encoder: gw.Encoder,
+			Filter:  HTTPFilterConfig{Filters: httpFilters},
+			Transformer: TransformerConfig{
+				Transformers: buildTransformerEntries(transformers, byTransformer),
+			},
 		},
 		Backend: BackendConfig{
 			Service: service,
@@ -100,4 +106,27 @@ func flattenRoutes(platforms []PlatformConfig) []RouterRule {
 
 func qualifiedServiceName(platform, service string) string {
 	return platform + "." + service
+}
+
+// groupServicesByTransformer 建立 tranformer 到使用该协议的所有服务的映射表
+func groupServicesByTransformer(platforms []PlatformConfig) map[string][]string {
+	m := make(map[string][]string)
+	for _, p := range platforms {
+		for _, s := range p.Service {
+			if s.Transformer == "" {
+				continue
+			}
+			m[s.Transformer] = append(m[s.Transformer], qualifiedServiceName(p.Name, s.Name))
+		}
+	}
+	return m
+}
+
+// buildTransformerEntries 把「已启用配置」与「service 分组」合成运行态注册表
+func buildTransformerEntries(enabled map[string]any, byTransformer map[string][]string) map[string]TransformerEntry {
+	entries := make(map[string]TransformerEntry, len(enabled))
+	for name, cfg := range enabled {
+		entries[name] = TransformerEntry{Config: cfg, Services: byTransformer[name]}
+	}
+	return entries
 }

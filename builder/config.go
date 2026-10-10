@@ -47,7 +47,12 @@ type RouterRule struct {
 }
 
 type TransformerConfig struct {
-	Transformers map[string]any
+	Transformers map[string]TransformerEntry
+}
+
+type TransformerEntry struct {
+	Config   any
+	Services []string
 }
 
 type TestTransformerConfig struct{}

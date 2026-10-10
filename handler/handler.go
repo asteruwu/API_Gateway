@@ -27,7 +27,7 @@ type HTTPHandler struct {
 	encoder      *Encoder
 	filters      []hf.HTTPFilter
 	transformers map[string]transformer.Transformer
-	next         func(service string) (net.Conn, error)
+	next         func(service string) (net.Conn, func(error), error)
 }
 
 type ConnHandler struct {
@@ -36,7 +36,7 @@ type ConnHandler struct {
 	close  bool
 }
 
-func NewHandler(cfg builder.HandlerConfig, next func(service string) (net.Conn, error)) (*HTTPHandler, error) {
+func NewHandler(cfg builder.HandlerConfig, next func(service string) (net.Conn, func(error), error)) (*HTTPHandler, error) {
 	decoder := NewDecoder(cfg.Decoder)
 	encoder := NewEncoder(cfg.Encoder)
 	// 初始化 filters 和 transformer
@@ -57,7 +57,7 @@ func NewHandler(cfg builder.HandlerConfig, next func(service string) (net.Conn, 
 	}, nil
 }
 
-func (h *HTTPHandler) Process(ch *ConnHandler) (*message.Response, error) {
+func (h *HTTPHandler) Process(ch *ConnHandler) (resp *message.Response, err error) {
 	buf, err := http.ReadRequest(ch.reader)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", gerrors.ErrReadRequest, err)
@@ -82,15 +82,28 @@ func (h *HTTPHandler) Process(ch *ConnHandler) (*message.Response, error) {
 	if msgReq.Service == "" {
 		return nil, gerrors.ErrServiceNotFound
 	}
-	// 3. next 调用
-	log.Println("[handler]pass message to backend")
-	conn, err := h.next(msgReq.Service)
+	// 3. 按 service 选取 transformer
+	tr, err := h.pickTransformer(msgReq.Service)
 	if err != nil {
 		return nil, err
 	}
-	// 4. 协议转换
-	transformer_0 := h.transformers["testT"]
-	return transformer_0.Transform(&msgReq, conn)
+	// 4. next 调用：借出后端连接，并拿到 release 回调
+	log.Println("[handler]pass message to backend")
+	conn, release, err := h.next(msgReq.Service)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { release(err) }()
+	// 5. 协议转换
+	return tr.Transform(&msgReq, conn)
+}
+
+func (h *HTTPHandler) pickTransformer(service string) (transformer.Transformer, error) {
+	tr, ok := h.transformers[service]
+	if !ok {
+		return nil, fmt.Errorf("%w: service %q", gerrors.ErrTransformerNotFound, service)
+	}
+	return tr, nil
 }
 
 func (h *HTTPHandler) HandleHTTPConn(conn net.Conn) error {
@@ -135,17 +148,21 @@ func buildFilter(cfgs []any) ([]hf.HTTPFilter, error) {
 }
 
 func buildTransformer(cfg builder.TransformerConfig) (map[string]transformer.Transformer, error) {
-	tMap := make(map[string]transformer.Transformer, len(cfg.Transformers))
-	for name, c := range cfg.Transformers {
-		switch c.(type) {
+	byService := make(map[string]transformer.Transformer)
+	for name, entry := range cfg.Transformers {
+		var t transformer.Transformer
+		switch entry.Config.(type) {
 		case builder.TestTransformerConfig:
-			tMap[name] = &transformer.TestTransformer{Name: name}
+			t = &transformer.TestTransformer{Name: name}
 		default:
-			log.Printf("[handler]failed to initialize transformer %q, unsupported config type %T", name, c)
+			log.Printf("[handler]failed to initialize transformer %q, unsupported config type %T", name, entry.Config)
 			return nil, gerrors.ErrInitializeTransformersFailed
 		}
+		for _, service := range entry.Services {
+			byService[service] = t
+		}
 	}
-	return tMap, nil
+	return byService, nil
 }
 
 func buildConnHandler(conn net.Conn) ConnHandler {
