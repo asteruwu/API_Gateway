@@ -48,7 +48,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
 
 相对 v05 的关键变化（v06 连接抽象）：连接池独立成 `backend/pool/` 子包并填实——`Call` 从池借出（`net.Dial` → `pool.Get`）、`next` 升级为 `(service) (net.Conn, func(error), error)`、handler 在 `Transform` 返回后 `release(err)`（成功 `Put`、失败关连接）；第一个 transformer 真实实现改为**配置驱动的帧定界协议**（4 字节长度前缀 + `io.ReadFull`，替换 half-close），并去掉 `defer conn.Close()`；transformer 按 service 绑定（`platform.yaml` 的 `transformer:` → `Compile` 反向聚合 + 校验）；fakebackend 同步升级为帧循环，支持同一后端连接连续服务多请求。
 
-仍保留的边界：`Call` 写死 `instances[0]`，负载均衡未接（`LoadBalancer` 接口待用）；transformer 帧协议为长度前缀的**模拟协议**（非真实 gRPC/MCP）；连接池下一版把等待/唤醒升级为 channel + select（见「下一步」）。
+仍保留的边界：`Call` 写死 `instances[0]`，负载均衡未接（`LoadBalancer` 接口待用）；transformer 帧协议为长度前缀的**模拟协议**（非真实 gRPC/MCP）。连接池等待/唤醒的重做已在本版落地（见 v06 进度末条），不再是待办。
 
 **接手前请务必先读「架构约定」一节**——那是反复讨论后定下的边界（模块间怎么解耦、协议知识关在哪、连接池归谁、响应从哪出去），从代码本身看不出来，但改动时必须遵守。「已知待办」记录了已识别但尚未处理的问题，不必当成 bug 重复上报。
 
@@ -82,7 +82,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
 
 ## 当前进度
 
-> 最后更新：2026-10-10　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
+> 最后更新：2026-10-11　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
 
 - [x] **v00 项目初始化** —— 完成，数据流已闭合
   - [x] `main.go`：按逆序完成编排（backend → handler → connector）
@@ -127,6 +127,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
   - [x] fakebackend 从裸字节 echo 升级为帧循环，一条后端连接连续服务多请求
   - [x] 配置：`gateway.pool` 解析/校验/派生；每个 service 必须绑定 transformer（编译期校验）
   - [x] 测试：`backend/pool/pool_test.go`（借出/复用/超限/失效/关闭/并发）+ `testbed/reuse_test.go`（`MaxConn=1` 断言后端仅建 1 条连接）
+  - [x] 连接池并发内核重做（分支 `v06/connPool-waiter-handoff`）：去掉 `sync.Cond` + `slots` 令牌 channel，改为「锁保护的空闲切片（可下标扫描）+ `numOpen` 配额 + 每个等待者一个唤醒 channel（归还/腾配额只唤醒一个）」。决策全在锁内（有 idle 必复用，杜绝「有空闲仍新建」）；reaper 继续按下标扫描、无需 drain（避免空闲空窗抖动）；等待超时改用等待者本地 `time.NewTimer`，并处理「超时 vs 被唤醒」竞态。新增测试 `TestGetPrefersIdleOverDial` / `TestWaiterWakesExactlyOne` / `TestConcurrentGetPutWithReaper`；全量 `go test ./... -race` 通过。
 - [ ] v07 安全认证
 - [ ] v08 管道细化
 - [ ] v09 协议扩展
@@ -171,21 +172,19 @@ clientConn → Decode → message.Request → filters
 - 假后端协议和 transformer 绑定演进：现为 **4 字节长度前缀帧**（模拟协议，fakebackend 与 transformer 对称实现）；后续接真实协议（gRPC/MCP）时替换实现。
 - 行为模式先做 `echo` + `fixed`，`error`/`delay` 等做到重试/熔断（v03/v06）时再加。
 
-## 下一步（连接池升级：channel + select）
+## 下一步（v07 安全认证）
 
-v06 已让连接池落地并跑通长连接复用。当前池用 `slots chan struct{}`（容量令牌）+ `idle []*PoolConn` 切片 + `sync.Cond`/`Broadcast` 做「池满等待 + 空闲唤醒」。`Broadcast` 会**惊群**（一次唤醒全部等待者），在热点池 + 突发流量下放大 CPU/调度/GC 开销，且等待者数量不受池容量约束。下一步把等待/唤醒升级为 **channel + select**，去掉 `Cond`：
+连接池的并发内核重做已在 v06 落地（见「当前进度」v06 末条）：`sync.Cond` 与 `slots` 令牌被替换为「锁保护的空闲切片 + `numOpen` 配额 + 每个等待者一个唤醒 channel」，只唤醒一个等待者，已无惊群。下一版进入 **v07 安全认证**。
 
 1. 目标
-   1. 消除惊群：资源归还只唤醒一个等待者；超时在等待者本地处理，不跨等待者广播
-   2. 用 channel 的阻塞队列语义替代手写等待队列 + `sync.Cond`
-   3. 对外 API（`Get`/`Put`/`Close`/`PoolConn`）与 `backend`/`builder` 保持不变
-2. 设计（待细化）
-   1. `idle` 由切片改为 `idle chan *PoolConn`（channel 装资源），容量 = `MaxConn`；`Get` 用 `select { case c := <-idle: ...; case <-slots: Dial; case <-timer.C: ErrPoolExhausted; case <-done: ErrPoolClosed }`
-   2. `Put` 非阻塞 send 回 `idle`（满 / 已关闭则关连接并归还令牌）；令牌释放作为「可新建」的唤醒信号
-   3. 超时/取消改用等待者本地 `time.NewTimer(remaining)`，移除 `time.AfterFunc` 广播回调
-3. 连带改动
-   1. reaper 无法对 channel 按下标 peek：`reapExpiredIdle` / `probeIdle` / 预热需改为「锁内排空 idle → 按 `idleSince` 过滤 → 关死的 / 放回活的」，并注意与并发 `Get`/`Put` 的交互
-4. 影响范围与前置
-   1. 主要改 `backend/pool/pool.go` 与 `backend/pool/reaper.go`（约 200–270 行），`probe.go` 不动
-   2. 属优化、不在关键路径；建议独立分支（如 `v06/connPool-channel`）进行
-   3. 以现有 `backend/pool/pool_test.go` 为行为契约，重构前后全绿（含 `-race`）
+   1. `http_filter` 落地真实鉴权 filter（首选 JWT 校验）：从请求头取 token，验签 + 校验过期/声明，失败即拒绝
+   2. 打通 **filter 短路响应路径**：filter 拒绝时直接产出 `message.Response` 写回并终止本请求链，不再继续后续 filter / 借后端连接 / transformer
+   3. 鉴权产物向后续环节传递（如写入 `message.Request` 供路由/转发使用），遵守「`message` 是唯一中间表示」的约定
+2. 现状与切入点
+   1. `HTTPFilter.HandleHTTPFilt(req) (*message.Response, error)` 已预留非空响应的返回位，但 `handler.Process` 目前只消费 error、忽略返回的响应——v07 需在 `Process` 的 filter 编排里消费非空响应并短路
+   2. `http_filter` 现有 `Router` 与占位 `TestFilter`；鉴权 filter 按同样模式新增实现
+   3. 鉴权 filter 与 `gateway.yaml` 的 `http_filters` 插件注册表（`hydrate.go` 的 `pluginHydrators` + `Enable` 开关）联动，保持配置驱动一致性
+3. 影响范围与前置
+   1. 主要改 `handler/http_filter/`（新增鉴权 filter）+ `handler/handler.go`（消费 filter 短路响应）+ `builder/hydrate.go`（注册插件）
+   2. 鉴权失败复用 `ErrorResponse` 的错误域映射（401/403）；错误域常量按需在 `pkg/errors` 增补
+   3. 新增鉴权 filter 单元测试 + testbed 端到端用例（合法 token / 缺失或非法 token 对照），不破坏既有路由/限流链路

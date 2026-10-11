@@ -319,3 +319,102 @@ func TestConcurrentGetPut(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestGetPrefersIdleOverDial 池内有空闲连接且仍有空额时，Get 必须复用空闲连接而不是新建。
+func TestGetPrefersIdleOverDial(t *testing.T) {
+	b := newTestBackend(t)
+	p := newPool(t, b.addr(), testPoolCfg(2)) // maxConn=2
+
+	pc1, err := p.Get()
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	waitAccepted(t, b, 1)
+	p.Put(pc1)
+
+	pc2, err := p.Get()
+	if err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+	if pc2 != pc1 {
+		t.Errorf("Get dialed a new conn while an idle one was available")
+	}
+	if got := b.acceptedCount(); got != 1 {
+		t.Errorf("accepted = %d, want 1 (reused idle)", got)
+	}
+	p.Put(pc2)
+}
+
+// TestWaiterWakesExactlyOne Put 归还一条连接时，只应唤醒一个等待者；其余等待者应按 WaitTimeout 超时。
+func TestWaiterWakesExactlyOne(t *testing.T) {
+	b := newTestBackend(t)
+	cfg := testPoolCfg(1)
+	cfg.WaitTimeout = 300 * time.Millisecond
+	p := newPool(t, b.addr(), cfg)
+
+	pc, err := p.Get()
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	waitAccepted(t, b, 1)
+
+	const waiters = 4
+	results := make(chan *PoolConn, waiters)
+	for i := 0; i < waiters; i++ {
+		go func() {
+			c, err := p.Get()
+			if err != nil {
+				results <- nil
+				return
+			}
+			results <- c
+		}()
+	}
+	time.Sleep(100 * time.Millisecond) // 等全部等待者登记
+
+	p.Put(pc) // 只归还一条，只应唤醒一个等待者
+
+	success := 0
+	for i := 0; i < waiters; i++ {
+		select {
+		case c := <-results:
+			if c != nil {
+				success++ // 不复用，保持 numOpen 占满，避免再唤醒其他等待者
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("waiter %d did not return in time", i)
+		}
+	}
+	if success != 1 {
+		t.Errorf("waiters served = %d, want exactly 1", success)
+	}
+}
+
+// TestConcurrentGetPutWithReaper 在短 reapInterval 下并发 Get/Put，覆盖无 drain 的 reaper 路径（配合 -race）。
+func TestConcurrentGetPutWithReaper(t *testing.T) {
+	b := newTestBackend(t)
+	cfg := testPoolCfg(4)
+	cfg.BorrowTimeout = 50 * time.Millisecond
+	cfg.IdleTimeout = 100 * time.Millisecond
+	cfg.WaitTimeout = 3 * time.Second
+	p := newPool(t, b.addr(), cfg)
+
+	const workers = 8
+	const iters = 30
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iters; j++ {
+				pc, err := p.Get()
+				if err != nil {
+					t.Errorf("Get: %v", err)
+					return
+				}
+				p.Put(pc)
+			}
+		}()
+	}
+	wg.Wait()
+}

@@ -24,13 +24,18 @@ type ConnPool struct {
 	waitTimeout   time.Duration
 	reapInterval  time.Duration
 
-	mu     sync.Mutex
-	cond   *sync.Cond
-	idle   []*PoolConn // LIFO
-	active map[*PoolConn]struct{}
-	slots  chan struct{} // 令牌 = 剩余可新建连接额度（容量 maxConn）
-	closed bool
-	done   chan struct{}
+	mu      sync.Mutex
+	idle    []*PoolConn
+	active  map[*PoolConn]struct{}
+	numOpen int
+	waiters []*waiter
+	closed  bool
+	done    chan struct{}
+}
+
+type waiter struct {
+	ch     chan struct{}
+	queued bool
 }
 
 // PoolConn 池借出的连接，对外表现为标准 net.Conn
@@ -56,60 +61,64 @@ func NewConnPool(addr string, cfg builder.PoolConfig) *ConnPool {
 		reapInterval:  calcReapInterval(cfg.BorrowTimeout, cfg.IdleTimeout),
 		idle:          make([]*PoolConn, 0, cfg.MinIdle),
 		active:        make(map[*PoolConn]struct{}),
-		slots:         make(chan struct{}, cfg.MaxConn),
 		done:          make(chan struct{}),
-	}
-	p.cond = sync.NewCond(&p.mu)
-	for i := 0; i < cfg.MaxConn; i++ {
-		p.slots <- struct{}{}
 	}
 	go p.reapLoop()
 	return p
 }
 
-// Get 借出连接：优先复用空闲连接（复用前做失效探测），否则取令牌新建；
-// 池满时阻塞等待，超过 WaitTimeout 返回 ErrPoolExhausted。
+// Get 借出连接：优先复用空闲连接（复用前做失效探测），否则有空额则新建；
+// 池满时登记等待者阻塞，超过 WaitTimeout 返回 ErrPoolExhausted。
 func (p *ConnPool) Get() (*PoolConn, error) {
 	deadline := time.Now().Add(p.waitTimeout)
 
-	p.mu.Lock()
 	for {
+		p.mu.Lock()
 		if p.closed {
 			p.mu.Unlock()
 			return nil, gerrors.ErrPoolClosed
 		}
+
+		// 1. 优先复用空闲连接
 		if n := len(p.idle); n > 0 {
 			pc := p.idle[n-1]
 			p.idle = p.idle[:n-1]
-			pc.idleSince = time.Time{}
 			p.mu.Unlock()
 
-			if alive(pc.Conn) {
-				p.mu.Lock()
-				if p.closed {
-					p.mu.Unlock()
-					p.discard(pc)
-					return nil, gerrors.ErrPoolClosed
-				}
-				pc.borrowedAt = time.Now()
-				p.active[pc] = struct{}{}
-				p.mu.Unlock()
-				return pc, nil
+			if !alive(pc.Conn) {
+				p.discard(pc)
+				continue
 			}
-			p.discard(pc)
 			p.mu.Lock()
-			continue
+			if p.closed {
+				p.mu.Unlock()
+				p.discard(pc)
+				return nil, gerrors.ErrPoolClosed
+			}
+			pc.idleSince = time.Time{}
+			pc.borrowedAt = time.Now()
+			p.active[pc] = struct{}{}
+			p.mu.Unlock()
+			return pc, nil
 		}
 
-		// 尝试非阻塞取令牌新建
-		if p.tryAcquireSlot() {
+		// 2. 有空额则新建
+		if p.numOpen < p.maxConn {
+			p.numOpen++
 			p.mu.Unlock()
+
 			conn, err := p.dial()
 			if err != nil {
-				p.releaseSlot()
+				p.mu.Lock()
+				p.numOpen--
+				p.wakeOneLocked()
+				p.mu.Unlock()
 				return nil, err
 			}
-			pc := &PoolConn{Conn: conn, pool: p}
+			pc := &PoolConn{
+				Conn: conn,
+				pool: p,
+			}
 			p.mu.Lock()
 			if p.closed {
 				p.mu.Unlock()
@@ -122,23 +131,42 @@ func (p *ConnPool) Get() (*PoolConn, error) {
 			return pc, nil
 		}
 
-		// 池满，等待归还或超时
+		// 3. 池满：登记等待者，本地 timer 超时
+		w := &waiter{
+			ch:     make(chan struct{}, 1),
+			queued: true,
+		}
+		p.waiters = append(p.waiters, w)
+		p.mu.Unlock()
+
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			p.mu.Unlock()
+			p.removeWaiter(w)
 			return nil, gerrors.ErrPoolExhausted
 		}
-		timer := time.AfterFunc(remaining, func() {
+		timer := time.NewTimer(remaining)
+		select {
+		case <-w.ch:
+			timer.Stop()
+			continue
+		case <-timer.C:
 			p.mu.Lock()
-			p.cond.Broadcast()
+			if w.queued {
+				p.removeWaiterLocked(w)
+				p.mu.Unlock()
+				return nil, gerrors.ErrPoolExhausted
+			}
 			p.mu.Unlock()
-		})
-		p.cond.Wait()
-		timer.Stop()
+			continue
+		case <-p.done:
+			timer.Stop()
+			p.removeWaiter(w)
+			return nil, gerrors.ErrPoolClosed
+		}
 	}
 }
 
-// Put 归还连接：active → idle，广播唤醒等待中的 Get
+// Put 归还连接：active → idle，并只唤醒一个等待者
 func (p *ConnPool) Put(pc *PoolConn) {
 	if pc == nil || pc.closedFlag.Load() {
 		return
@@ -157,12 +185,22 @@ func (p *ConnPool) Put(pc *PoolConn) {
 	pc.borrowedAt = time.Time{}
 	pc.idleSince = time.Now()
 	p.idle = append(p.idle, pc)
+	p.wakeOneLocked()
 	p.mu.Unlock()
-	p.cond.Broadcast()
 }
 
-// discard 池内唯一的关闭路径：幂等关 socket、摘除引用、归还令牌、广播通知
+// discard 池内唯一关闭路径的加锁包装：幂等关 socket、摘除引用、腾出配额、唤醒一个等待者
 func (p *ConnPool) discard(pc *PoolConn) {
+	if pc == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.discardLocked(pc)
+}
+
+// discardLocked discard 的核心，调用方必须已持有 p.mu
+func (p *ConnPool) discardLocked(pc *PoolConn) {
 	if pc == nil {
 		return
 	}
@@ -170,16 +208,14 @@ func (p *ConnPool) discard(pc *PoolConn) {
 		pc.closedFlag.Store(true)
 		_ = pc.Conn.Close()
 
-		p.mu.Lock()
 		delete(p.active, pc)
 		p.removeIdleLocked(pc)
-		p.mu.Unlock()
-
-		p.releaseSlot()
+		p.numOpen--
+		p.wakeOneLocked()
 	})
 }
 
-// Close 销毁连接：关 socket、摘除引用、归还令牌，幂等。
+// Close 销毁连接：关 socket、摘除引用、腾出配额，幂等。
 func (pc *PoolConn) Close() error {
 	pc.pool.discard(pc)
 	return nil
@@ -193,7 +229,7 @@ func (pc *PoolConn) CloseWrite() error {
 	return nil
 }
 
-// Close 关闭池：停 reaper，广播唤醒所有等待方，关闭全部空闲连接；
+// Close 关闭池：停 reaper、唤醒全部等待者、关闭全部空闲连接；
 // 已借出的连接由持有者经 Put/discard 收敛
 func (p *ConnPool) Close() error {
 	p.mu.Lock()
@@ -205,13 +241,46 @@ func (p *ConnPool) Close() error {
 	close(p.done)
 	idle := p.idle
 	p.idle = nil
+	p.waiters = nil
 	p.mu.Unlock()
 
-	p.cond.Broadcast()
 	for _, pc := range idle {
 		p.discard(pc)
 	}
 	return nil
+}
+
+// wakeOneLocked 出队队首有效等待者并投递唤醒信号，调用方必须已持有 p.mu
+func (p *ConnPool) wakeOneLocked() {
+	for len(p.waiters) > 0 {
+		w := p.waiters[0]
+		p.waiters = p.waiters[1:]
+		if w.queued {
+			w.queued = false
+			w.ch <- struct{}{}
+			return
+		}
+	}
+}
+
+// removeWaiter 从等待队列摘除一个 waiter（超时/关闭路径）
+func (p *ConnPool) removeWaiter(w *waiter) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.removeWaiterLocked(w)
+}
+
+func (p *ConnPool) removeWaiterLocked(w *waiter) {
+	if w == nil || !w.queued {
+		return
+	}
+	for i, x := range p.waiters {
+		if x == w {
+			p.waiters = append(p.waiters[:i], p.waiters[i+1:]...)
+			break
+		}
+	}
+	w.queued = false
 }
 
 func (p *ConnPool) dial() (net.Conn, error) {
@@ -229,23 +298,6 @@ func (p *ConnPool) removeIdleLocked(pc *PoolConn) {
 			return
 		}
 	}
-}
-
-func (p *ConnPool) tryAcquireSlot() bool {
-	select {
-	case <-p.slots:
-		return true
-	default:
-		return false
-	}
-}
-
-func (p *ConnPool) releaseSlot() {
-	select {
-	case p.slots <- struct{}{}:
-	default:
-	}
-	p.cond.Broadcast()
 }
 
 func withPoolDefaults(cfg builder.PoolConfig) builder.PoolConfig {

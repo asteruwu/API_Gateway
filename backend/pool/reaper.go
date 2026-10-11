@@ -112,29 +112,32 @@ func (p *ConnPool) restoreIdle(pc *PoolConn, now time.Time) {
 	}
 	pc.idleSince = now
 	p.idle = append(p.idle, pc)
+	p.wakeOneLocked()
 	p.mu.Unlock()
-	p.cond.Broadcast()
 }
 
 // dialIdle 预热一条空闲连接
 func (p *ConnPool) dialIdle() bool {
-	if !p.tryAcquireSlot() {
-		return false
-	}
 	p.mu.Lock()
-	if p.closed || len(p.idle) >= p.minIdle {
+	if p.closed || p.numOpen >= p.maxConn || len(p.idle) >= p.minIdle {
 		p.mu.Unlock()
-		p.releaseSlot()
 		return false
 	}
+	p.numOpen++
 	p.mu.Unlock()
 
 	conn, err := p.dial()
 	if err != nil {
-		p.releaseSlot()
+		p.mu.Lock()
+		p.numOpen--
+		p.wakeOneLocked()
+		p.mu.Unlock()
 		return false
 	}
-	pc := &PoolConn{Conn: conn, pool: p}
+	pc := &PoolConn{
+		Conn: conn,
+		pool: p,
+	}
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -143,6 +146,7 @@ func (p *ConnPool) dialIdle() bool {
 	}
 	pc.idleSince = time.Now()
 	p.idle = append(p.idle, pc)
+	p.wakeOneLocked()
 	p.mu.Unlock()
 	return true
 }
