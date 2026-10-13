@@ -5,6 +5,7 @@ import (
 	"API_Gateway/handler/message"
 	gconst "API_Gateway/pkg/constant"
 	gerrors "API_Gateway/pkg/errors"
+	"fmt"
 	"io"
 	"net/http"
 )
@@ -40,7 +41,7 @@ func (d *Decoder) Decode(req *http.Request) (message.Request, error) {
 			return message.Request{}, gerrors.ErrBodyTooLarge
 		}
 		if err != nil {
-			return message.Request{}, gerrors.ErrDecodeRequest
+			return message.Request{}, fmt.Errorf("%w: %w", gerrors.ErrDecodeRequest, err)
 		}
 	}
 

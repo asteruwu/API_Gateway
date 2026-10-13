@@ -76,6 +76,9 @@ var (
 
 	ErrBodyTooLarge = errors.New("handler: request too large")
 
+	// ErrUnauthorized 请求未通过身份认证（缺少或非法凭证）
+	ErrUnauthorized = errors.New("handler: request unauthorized")
+
 	// ErrEncodeResponse 响应编码失败
 	ErrEncodeResponse = errors.New("handler: encode response failed")
 

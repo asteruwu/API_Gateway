@@ -10,6 +10,12 @@ import (
 // DefaultListenerPort 监听端口默认值，未配置时使用
 const DefaultConnectorListenerPort = "6666"
 
+// DefaultConnectorAcceptBackoffMin Accept 失败后的首次退避时长
+const DefaultConnectorAcceptBackoffMin = 5 * time.Millisecond
+
+// DefaultConnectorAcceptBackoffMax Accept 连续失败时的退避上限
+const DefaultConnectorAcceptBackoffMax = 1 * time.Second
+
 // ===== handler 处理层 =====
 
 // DefaultReadTimeout 单次读请求的超时时间

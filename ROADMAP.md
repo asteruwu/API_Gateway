@@ -68,18 +68,6 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
 | v09 | 协议扩展 | 第二个 transformer 实现（验证新增协议不改已有代码） |
 | v10 | 最终完善 | 错误处理统一、响应路径补全走查、代码整理，可运行版本 |
 
-## 汇总时间线
-
-| 阶段 | 内容 | 对应版本 | 预计天数 |
-|---|---|---|---|
-| 0 | 接口与数据模型定义 | v00 | 0.5 天 |
-| 1 | 端到端骨架打通 | v01-v02 | 1-2 天 |
-| 2 | 连接层填实 | v03 | 1 天 |
-| 3 | 处理层填实（filter+路由） | v04-v05 | 2-3 天 |
-| 4 | 协议转换+连接池 | v06-v09 | 3-4 天 |
-| 5 | 联调补漏 | v10 | 1-2 天 |
-| **合计** | | | **约 8.5-12.5 天** |
-
 ## 当前进度
 
 > 最后更新：2026-10-11　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
@@ -110,7 +98,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
 - [x] **v04 请求解析** —— 完成，decoder 产出结构化请求 + keep-alive 落地
   - [x] `message.Request` 结构化：新增 `Method/URL/Header/Host/ContentLength/Body`（`Proto` 保留），叶子包零依赖；`Response` 同步结构化（StatusCode/Header/Body/Proto/ContentLength）
   - [x] `Decoder.Decode` 从 `*http.Request` 完整映射；body 边界：`ContentLength` 预检 + `LimitReader(maxBody+1)` 双重限制（chunked `ContentLength=-1` 也能拦截）、读失败转 `ErrDecodeRequest`、入口 `defer req.Body.Close()`
-  - [x] encoder 真实编码：状态行 + headers + Content-Length（由编码器统一计算）；`ErrorResponse` 按错误域映射状态码（413/400/403/502），`message` 保持零依赖
+  - [x] encoder 真实编码：状态行 + headers + Content-Length（由编码器统一计算）；`ErrorResponse` 按错误域映射状态码（403/404/502/503），`message` 保持零依赖（注：413/400 走不到 `ErrorResponse`——请求边界已不可信的错误直接断连，是 v10「错误处理统一」的待办）
   - [x] keep-alive：`req.Close` → `ch.close`（覆盖 `Connection: close` 与 HTTP/1.0 默认短连接），同一条连接连续处理多请求
   - [x] 测试：`decoder_test.go` 八个单元测试（字段映射、body 临界值、chunked 超限、体长不符、默认 maxBody、无 body）+ testbed 新增 `TestEchoKeepAlive`（同连接 3 个请求 + `Connection: close` 后 EOF），全部通过（含 `-race`）
 - [x] **v05 路由能力** —— 完成，配置驱动路由 + 配置加载链路打通
@@ -159,6 +147,16 @@ clientConn → Decode → message.Request → filters
 - ~~`message.ErrorResponse`：目前返回空响应~~ —— 已解决（v04 已产出合法 HTTP 响应，按错误域映射 413/400/403/502；错误处理统一仍留 v10 走查）
 - ~~testbed 响应侧仍按透传读回、客户端需升格 `http.ReadResponse`~~ —— 已解决（v04 编码器产出真实响应帧后已升格）
 - `ErrBodyTooLarge`：目前归入「边界不可信错误」直接断连、不写 413；若后续想给客户端明确反馈，可在断连前写一次 413 —— 与 v10「错误处理统一」相关
+- 鉴权（v07）落地后处理：
+  - 客户端连接无写超时：`handleProcessResponse` 的 `conn.Write` 未设 write deadline，慢读客户端可长期占住 goroutine
+  - `buildFilter` 末尾硬塞的 `TestFilter`：它总返回非 nil 响应，`Process` 开始消费 filter 短路响应前必须删掉
+  - 错误响应 body 直接回 `err.Error()`，会把后端地址、拨号原因等内部细节暴露给客户端，需改为对外文案 + 内部日志
+  - Router 未做 `path.Clean`：`/orders/../admin` 会命中 `/orders`，按路由差异化鉴权时构成绕过
+  - Router 前缀匹配无路径段边界：`/ordersXYZ` 会命中 `/orders`
+- 真正做协议翻译的 transformer（v09）落地时处理：transformer 在后端连接上的读写未设 deadline，后端挂死时只能靠 reaper 借出超时强杀（默认 10–15s）
+- v08 处理：
+  - 负载均衡：`BManager.Call` 写死 `instances[0]`
+  - 插件注册表：`pluginHydrators` 被 tcp/http filter、transformer 三类共用一个命名空间，错位引用（如把 `tcp_limit` 写进 `http_filters`）到 `buildFilter` 运行时才报错
 - filter 短路响应路径（filter 拒绝时直接产出响应写回、跳过后续链路）留 v07/v08 落地；编码失败（`errE`）时的断连策略留 v10 走查
 - ~~`conn.Write` 返回值未检查~~ —— 已解决（v02 已检查返回值）
 - ~~`Decode` 缺 error 返回~~ —— 已解决（v02 骨架已带 error 返回）

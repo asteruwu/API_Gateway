@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"runtime/debug"
+	"time"
 )
 
 // 读取配置，初始化
@@ -46,6 +48,11 @@ func NewListener(cfg builder.ConnectorConfig, next func(net.Conn) error) (*Liste
 
 func (l *Listener) Process(conn net.Conn) {
 	defer conn.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[connector]panic while serving %s: %v\n%s", conn.RemoteAddr(), r, debug.Stack())
+		}
+	}()
 	// filters 编排由配置顺序决定
 	for _, f := range l.filters {
 		err := f.HandleTCPConn(conn)
@@ -73,16 +80,23 @@ func (l *Listener) Connect() error {
 	l.listener = listener
 	defer l.Close()
 
+	var backoff time.Duration
 	for {
 		conn, err := listener.Accept()
 		if errors.Is(err, net.ErrClosed) {
 			return err
 		}
 		if err != nil {
-			// TODO
-			fmt.Println("[connector]failed to accept connection, drop")
+			if backoff == 0 {
+				backoff = gconst.DefaultConnectorAcceptBackoffMin
+			} else {
+				backoff = min(backoff*2, gconst.DefaultConnectorAcceptBackoffMax)
+			}
+			log.Printf("[connector]failed to accept connection, retry in %v, errmsg: %s", backoff, err.Error())
+			time.Sleep(backoff)
 			continue
 		}
+		backoff = 0
 		go l.Process(conn)
 	}
 }

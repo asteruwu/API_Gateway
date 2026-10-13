@@ -93,7 +93,13 @@ func (h *HTTPHandler) Process(ch *ConnHandler) (resp *message.Response, err erro
 	if err != nil {
 		return nil, err
 	}
-	defer func() { release(err) }()
+	defer func() {
+		if r := recover(); r != nil {
+			release(gerrors.ErrInternal)
+			panic(r)
+		}
+		release(err)
+	}()
 	// 5. 协议转换
 	return tr.Transform(&msgReq, conn)
 }
@@ -212,22 +218,28 @@ func closeConnOrNot(err error) bool {
 	return false
 }
 
+// ErrorResponse 映射可写回的错误
 func ErrorResponse(err error) *message.Response {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, gerrors.ErrBodyTooLarge):
-		status = http.StatusRequestEntityTooLarge // 413
-	case errors.Is(err, gerrors.ErrDecodeRequest),
-		errors.Is(err, gerrors.ErrEmptyRequest):
-		status = http.StatusBadRequest // 400
+	case errors.Is(err, gerrors.ErrUnauthorized):
+		status = http.StatusUnauthorized // 401
 	case errors.Is(err, gerrors.ErrHTTPFilterReject):
 		status = http.StatusForbidden // 403
 	case errors.Is(err, gerrors.ErrRouteNotFound):
 		status = http.StatusNotFound // 404
 	case errors.Is(err, gerrors.ErrServiceNotFound),
 		errors.Is(err, gerrors.ErrNoInstance),
-		errors.Is(err, gerrors.ErrDialFailed):
+		errors.Is(err, gerrors.ErrDialFailed),
+		errors.Is(err, gerrors.ErrForwardWrite),
+		errors.Is(err, gerrors.ErrReadResponse),
+		errors.Is(err, gerrors.ErrTransform),
+		errors.Is(err, gerrors.ErrRestore):
 		status = http.StatusBadGateway // 502
+	case errors.Is(err, gerrors.ErrPoolExhausted),
+		errors.Is(err, gerrors.ErrPoolClosed),
+		errors.Is(err, gerrors.ErrInstanceUnhealthy):
+		status = http.StatusServiceUnavailable // 503
 	}
 
 	reason := http.StatusText(status)
