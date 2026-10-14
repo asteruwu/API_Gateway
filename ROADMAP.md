@@ -153,6 +153,8 @@ clientConn → Decode → message.Request → filters
   - 错误响应 body 直接回 `err.Error()`，会把后端地址、拨号原因等内部细节暴露给客户端，需改为对外文案 + 内部日志
   - Router 未做 `path.Clean`：`/orders/../admin` 会命中 `/orders`，按路由差异化鉴权时构成绕过
   - Router 前缀匹配无路径段边界：`/ordersXYZ` 会命中 `/orders`
+  - Router Host 匹配未归一化：`Host` 带端口（如 `gateway:8080`）或大小写不同即 404，testbed 一律 `Host: gateway` 未覆盖
+  - 请求头无大小上限：`http.ReadRequest` 不限制头部总长，超大请求头可耗尽内存
 - 真正做协议翻译的 transformer（v09）落地时处理：transformer 在后端连接上的读写未设 deadline，后端挂死时只能靠 reaper 借出超时强杀（默认 10–15s）
 - v08 处理：
   - 负载均衡：`BManager.Call` 写死 `instances[0]`

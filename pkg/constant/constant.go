@@ -33,6 +33,15 @@ const DefaultHTTPProto = "HTTP/1.1"
 // DefaultErrorContentType 默认文本错误响应
 const DefaultErrorContentType = "text/plain; charset=utf-8"
 
+// AuthCredentialBearer 凭证类型：Authorization: Bearer <JWT>
+const AuthCredentialBearer = "bearer"
+
+// AuthAlgorithmHS256 JWT 签名算法 HMAC-SHA256
+const AuthAlgorithmHS256 = "HS256"
+
+// AuthMinHS256SecretLen HS256 密钥最短字节数，RFC 7518 3.2 要求不短于哈希输出长度
+const AuthMinHS256SecretLen = 32
+
 // ===== backend 后端层 =====
 
 // DefaultPoolMaxConn 连接池全局最大连接数（idle + active）

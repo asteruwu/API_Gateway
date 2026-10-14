@@ -2,6 +2,7 @@ package builder
 
 import (
 	"fmt"
+	"time"
 
 	"API_Gateway/pkg/tools"
 	gerrors "API_Gateway/pkg/errors"
@@ -11,6 +12,7 @@ import (
 var pluginHydrators = map[string]func(raw any) (any, error){
 	"tcp_limit": hydrateTCPLimit,
 	"testT":     hydrateTestTransformer,
+	"auth":      hydrateAuth,
 }
 
 func Hydrate(gw *GatewayConfig) error {
@@ -64,3 +66,45 @@ func hydrateTestTransformer(raw any) (any, error) {
 	return TestTransformerConfig{}, nil
 }
 
+func hydrateAuth(raw any) (any, error) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("expected map, got %T", raw)
+	}
+	creds, ok := tools.ToStrings(m["credentials"])
+	if !ok {
+		return nil, fmt.Errorf("credentials: expected string list")
+	}
+	jwt, err := hydrateJWTVerifier(m["jwt"])
+	if err != nil {
+		return nil, fmt.Errorf("jwt: %w", err)
+	}
+	return AuthFilterConfig{Credentials: creds, JWT: jwt}, nil
+}
+
+func hydrateJWTVerifier(raw any) (JWTVerifierConfig, error) {
+	var cfg JWTVerifierConfig
+	if raw == nil {
+		return cfg, nil
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return cfg, fmt.Errorf("expected map, got %T", raw)
+	}
+	cfg.Algorithm, _ = m["algorithm"].(string)
+	cfg.SecretEnv, _ = m["secret_env"].(string)
+	cfg.Issuer, _ = m["issuer"].(string)
+	cfg.Audience, _ = m["audience"].(string)
+	if v, ok := m["leeway"]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return cfg, fmt.Errorf("leeway: expected duration string, got %T", v)
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return cfg, fmt.Errorf("leeway: %w", err)
+		}
+		cfg.Leeway = d
+	}
+	return cfg, nil
+}

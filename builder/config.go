@@ -40,10 +40,26 @@ type RouterConfig struct {
 }
 
 type RouterRule struct {
+	ID         string
 	Hosts      []string
 	PathPrefix string
 	Methods    []string
 	Service    string
+}
+
+type AuthFilterConfig struct {
+	Credentials []string
+	JWT         JWTVerifierConfig
+	Policies    map[string]RouteAuthConfig
+}
+
+type JWTVerifierConfig struct {
+	Algorithm string
+	SecretEnv string
+	Secret    []byte
+	Issuer    string
+	Audience  string
+	Leeway    time.Duration
 }
 
 type TransformerConfig struct {
