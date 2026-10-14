@@ -14,7 +14,7 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 		return nil, fmt.Errorf("%w: %w", gerrors.ErrInvalidConfig, errors.Join(errs...))
 	}
 
-	rules, policies := flattenRoutes(platforms)
+	rules, policies := compileRoutes(platforms)
 	errs = append(errs, validateRouteConflicts(rules)...)
 
 	service := flattenServices(platforms)
@@ -88,30 +88,45 @@ func flattenServices(platforms []PlatformConfig) []ServiceRef {
 	return refs
 }
 
-// flattenRoutes 把各 platform 下 service 的 routes 压平成 RouterRule 列表，
-// 同一次遍历里为每条 route 生成稳定 ID，并反向聚合出「RouteID → 策略」绑定表。
-func flattenRoutes(platforms []PlatformConfig) ([]RouterRule, map[string]AuthPolicy) {
+// compileRoutes 一次遍历平台配置，同时展平路由规则并聚合鉴权策略。
+func compileRoutes(platforms []PlatformConfig) ([]RouterRule, map[string]AuthPolicy) {
 	rules := make([]RouterRule, 0)
 	policies := make(map[string]AuthPolicy)
 	for _, p := range platforms {
 		for _, s := range p.Service {
 			service := qualifiedServiceName(p.Name, s.Name)
 			for i, r := range s.Routes {
-				id := routeID(service, i)
-				rules = append(rules, RouterRule{
-					ID:         id,
-					Hosts:      p.Host,
-					PathPrefix: r.PathPrefix,
-					Methods:    r.Methods,
-					Service:    service,
-				})
-				if r.Auth != nil {
-					policies[id] = AuthPolicy{Roles: r.Auth.Roles}
-				}
+				rule := flattenRoute(service, p.Host, r, i)
+				rules = append(rules, rule)
+				policies[rule.ID] = flattenAuthPolicy(r.Auth)
 			}
 		}
 	}
 	return rules, policies
+}
+
+// flattenRoute 把单条 route 声明展平为 RouterRule，并按 service+下标生成稳定 ID
+func flattenRoute(service string, hosts []string, route RouteRuleConfig, idx int) RouterRule {
+	return RouterRule{
+		ID:         routeID(service, idx),
+		Hosts:      hosts,
+		PathPrefix: route.PathPrefix,
+		Methods:    route.Methods,
+		Service:    service,
+	}
+}
+
+// flattenAuthPolicy 把编写态的分层声明展平为运行态策略；nil 表示该 route 未声明 auth。
+func flattenAuthPolicy(auth *RouteAuthConfig) AuthPolicy {
+	if auth == nil {
+		return AuthPolicy{}
+	}
+	return AuthPolicy{
+		Public:     auth.Public,
+		Credential: auth.Credential,
+		Roles:      auth.Require.Roles,
+		Scopes:     auth.Require.Scopes,
+	}
 }
 
 func routeID(service string, idx int) string {

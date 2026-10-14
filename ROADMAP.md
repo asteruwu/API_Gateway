@@ -121,7 +121,8 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
   - [x] 步骤 2：配置结构——`RouterRule.ID`、`AuthFilterConfig`、`JWTVerifierConfig`（编写态/运行态分层）
   - [x] 步骤 3：hydrate 注册 `auth` 插件，YAML → `AuthFilterConfig`
   - [x] 步骤 4：编译与校验——`RouteID` 生成、策略表反向聚合、`validateRouteAuth` 一致性校验、`AuthFilterConfig` 分层（密钥改声明式 `SecretEnv`）
-  - [ ] 步骤 5-9 → 重组为修订规划阶段 B–F（消息模型 / 鉴权 filter / 装配 / 测试 / 文档）
+  - [x] 阶段 A（配置与编译层收口）：`RouteAuthConfig` 编写态分层（`public`/`credential`/`require{roles,scopes}`）+ 运行态 `AuthPolicy` 展平；`compileRoutes` 一次遍历展平路由并聚合全量策略；逐条声明校验（漏声明 / public 互斥 / credential 必须被接受）
+  - [ ] 阶段 B–F（消息模型 / 鉴权 filter / 装配 / 测试 / 文档）
 - [ ] v08 管道细化
 - [ ] v09 协议扩展
 - [ ] v10 最终完善
@@ -147,28 +148,34 @@ clientConn → Decode → message.Request → filters
 
 ## 已知待办（不影响结构，填肉时处理）
 
-- ~~`HandleHTTPConn`：错误路径需转成 `message.ErrorResponse(err)` 写回，而不是直接 `return err`~~ —— 已解决（v03 已写回 + `closeConnOrNot` 分类断连/写回）
-- ~~`HandleHTTPConn`：`for` 循环缺 keep-alive 退出判断（目前仅以 EOF/err 结束生命周期）~~ —— 已解决（v03 已补 EOF 退出 + 错误分类）
-- ~~`message.ErrorResponse`：目前返回空响应~~ —— 已解决（v04 已产出合法 HTTP 响应，按错误域映射 413/400/403/502；错误处理统一仍留 v10 走查）
-- ~~testbed 响应侧仍按透传读回、客户端需升格 `http.ReadResponse`~~ —— 已解决（v04 编码器产出真实响应帧后已升格）
-- `ErrBodyTooLarge`：目前归入「边界不可信错误」直接断连、不写 413；若后续想给客户端明确反馈，可在断连前写一次 413 —— 与 v10「错误处理统一」相关
-- 鉴权（v07）落地后处理：
-  - 客户端连接无写超时：`handleProcessResponse` 的 `conn.Write` 未设 write deadline，慢读客户端可长期占住 goroutine
-  - ~~`buildFilter` 末尾硬塞的 `TestFilter`~~ —— 已解决（步骤 1 已删除占位；`Process` 消费 filter 短路响应见修订规划阶段 B3）
-  - 错误响应 body 直接回 `err.Error()`，会把后端地址、拨号原因等内部细节暴露给客户端，需改为对外文案 + 内部日志
-  - Router 未做 `path.Clean`：`/orders/../admin` 会命中 `/orders`，按路由差异化鉴权时构成绕过
-  - Router 前缀匹配无路径段边界：`/ordersXYZ` 会命中 `/orders`
-  - Router Host 匹配未归一化：`Host` 带端口（如 `gateway:8080`）或大小写不同即 404，testbed 一律 `Host: gateway` 未覆盖
-  - 请求头无大小上限：`http.ReadRequest` 不限制头部总长，超大请求头可耗尽内存
-- 真正做协议翻译的 transformer（v09）落地时处理：transformer 在后端连接上的读写未设 deadline，后端挂死时只能靠 reaper 借出超时强杀（默认 10–15s）
-- v08 处理：
-  - 负载均衡：`BManager.Call` 写死 `instances[0]`
-  - 插件注册表：`pluginHydrators` 被 tcp/http filter、transformer 三类共用一个命名空间，错位引用（如把 `tcp_limit` 写进 `http_filters`）到 `buildFilter` 运行时才报错
-- 鉴权后续扩展（详见「下一步」的「明确不在 v07」）：verifier 配置注册表 / 多 issuer / JWKS / RS256；有状态 verifier（session、token 黑名单）；出站身份透传防伪签名 / mTLS（归 transformer）；更多授权维度（apikey subscription、ABAC）；鉴权 allow/deny 审计日志
-- filter 短路响应路径（filter 拒绝时直接产出响应写回、跳过后续链路）留 v07/v08 落地；编码失败（`errE`）时的断连策略留 v10 走查
-- ~~`conn.Write` 返回值未检查~~ —— 已解决（v02 已检查返回值）
-- ~~`Decode` 缺 error 返回~~ —— 已解决（v02 骨架已带 error 返回）
-- ~~`builder` 的 `HandlerConfig.filter/transformer`、`BackendConfig.service` 仍是小写~~ —— 已解决（字段已全部导出，配置可反序列化）
+> 仅保留未完成项，按落地阶段归类；每项随对应版本完成后删除。
+
+### v07 安全认证（当前）
+- filter 短路响应路径：filter 拒绝时直接产出响应写回、跳过后续链路（对应阶段 B3，须先于 C 落地）
+- Router 未做 `path.Clean`：`/orders/../admin` 会命中 `/orders`，按路由差异化鉴权时构成绕过
+- Router 前缀匹配无路径段边界：`/ordersXYZ` 会命中 `/orders`
+- Router Host 匹配未归一化：`Host` 带端口（如 `gateway:8080`）或大小写不同即 404，testbed 一律 `Host: gateway` 未覆盖
+- 客户端连接无写超时：`handleProcessResponse` 的 `conn.Write` 未设 write deadline，慢读客户端可长期占住 goroutine
+- 错误响应 body 直接回 `err.Error()`，会把后端地址、拨号原因等内部细节暴露给客户端，需改为对外文案 + 内部日志
+- 请求头无大小上限：`http.ReadRequest` 不限制头部总长，超大请求头可耗尽内存
+
+### v08 管道细化
+- 负载均衡：`BManager.Call` 写死 `instances[0]`
+- 插件注册表：`pluginHydrators` 被 tcp/http filter、transformer 三类共用一个命名空间，错位引用（如把 `tcp_limit` 写进 `http_filters`）到 `buildFilter` 运行时才报错
+
+### v09 协议扩展
+- transformer 在后端连接上的读写未设 deadline，后端挂死时只能靠 reaper 借出超时强杀（默认 10–15s）
+
+### v10 最终完善
+- 错误处理统一走查：`ErrBodyTooLarge` 目前归入「边界不可信错误」直接断连、不写 413，若想给客户端明确反馈可在断连前写一次 413
+- 编码失败（`errE`）时的断连策略
+
+### 后续扩展（明确不在 v07，详见「下一步」的「明确不在 v07」）
+- verifier 配置注册表 / 多 issuer / JWKS / RS256
+- 有状态 verifier（session、token 黑名单）
+- 出站身份透传与防伪签名 / mTLS（归 transformer，v09 真实协议时落地）
+- 更多授权维度（apikey subscription、ABAC、IP 白名单）
+- 鉴权 allow/deny 审计日志
 
 ## 测试基础设施
 
@@ -193,14 +200,14 @@ clientConn → Decode → message.Request → filters
 7. **授权维度用并列字段 + 维度检查函数**（`checkRoles`/`checkScopes`/...），不用泛化 requirements 列表。
 8. **Identity 走 `message.Request`**（零依赖归一化结构）；入站伪造身份头必须剥离；出站转发/签名归 transformer。
 
-### 阶段 A —— 配置与编译层收口（builder）
+### 阶段 A —— 配置与编译层收口（builder）✅ 已完成
 
 - A1 运行态 `AuthPolicy` 增 `Public`/`Credential`/`Scopes`（`Roles` 已有）；写态 `RouteAuthConfig` 同步加 `public`/`credential`/`scopes`。
-- A2 `flattenRoutes` 对**每条** route 产策略（不再仅 `Auth != nil`），带 `Public`/`Credential`/`Roles`/`Scopes`。
+- A2 `compileRoutes` 一次遍历同时展平路由并为**每条** route 产策略（不再仅 `Auth != nil`），带 `Public`/`Credential`/`Roles`/`Scopes`。
 - A3 `validateRouteAuth` 升级：启用时逐条要求 `Auth != nil`；`Public` 与其它要求互斥；`required credential ∈ filter accepted`；保留「未启用却声明 auth」报错。
-- A4 hydrate 适配新可选字段（类型不符报错）。
-- A5 单测：漏声明、public 互斥、credential 非法、策略表全量。
-- 主要文件：`builder/{config,platform,compile,validate,hydrate}.go`、`builder/compile_test.go`。
+- A4 hydrate 类型校验沿用既有工具：`credentials`（`ToStrings`）与 `jwt` 可选字段（`ToStringField`，如 `leeway`）类型不符即报错，新可选字段无需额外适配。
+- A5 单测：漏声明、public 互斥、credential 非法、策略表全量；hydrate 类型校验（credentials/jwt/leeway）与缺配置报错。
+- 主要文件：`builder/{config,platform,compile,validate,hydrate}.go`、`builder/compile_test.go`、`builder/hydrate_test.go`。
 
 ### 阶段 B —— 消息模型与路由
 

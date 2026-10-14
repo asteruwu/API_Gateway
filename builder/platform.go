@@ -24,5 +24,12 @@ type RouteRuleConfig struct {
 }
 
 type RouteAuthConfig struct {
-	Roles []string `yaml:"roles"`
+	Public     bool             `yaml:"public"`
+	Credential string           `yaml:"credential"`
+	Require    RouteAuthRequire `yaml:"require"`
+}
+
+type RouteAuthRequire struct {
+	Roles  []string `yaml:"roles"`
+	Scopes []string `yaml:"scopes"`
 }

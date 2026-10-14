@@ -2,6 +2,7 @@ package builder
 
 import (
 	"fmt"
+	"slices"
 
 	gconst "API_Gateway/pkg/constant"
 	gerrors "API_Gateway/pkg/errors"
@@ -132,39 +133,74 @@ func validatePoolConfig(cfg PoolConfig) []error {
 // validateRouteAuth 校验路由鉴权与 auth 插件的引用一致性，以及鉴权插件自身的参数
 func validateRouteAuth(gw GatewayConfig, platforms []PlatformConfig) []error {
 	enabled := pluginEnabled(gw.HTTPFilters, "auth")
-	hasRouteAuth := false
+
+	var (
+		cfg  AuthFilterConfig
+		errs []error
+	)
+	if enabled {
+		c, ok := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig)
+		if !ok {
+			return []error{fmt.Errorf("%w: auth plugin config missing or of wrong type %T",
+				gerrors.ErrInvalidAuthConfig, gw.HTTPFilters.Configs["auth"])}
+		}
+		cfg = c
+		errs = append(errs, validateCredentials(cfg.Credentials)...)
+		errs = append(errs, validateJWTVerifier(cfg.JWT)...)
+	}
+
+	declared := false
 	for _, p := range platforms {
 		for _, s := range p.Service {
-			for _, r := range s.Routes {
-				if r.Auth != nil {
-					hasRouteAuth = true
+			for i, r := range s.Routes {
+				if r.Auth == nil {
+					if enabled {
+						errs = append(errs, fmt.Errorf("%w: platform %q service %q route[%d] declares no auth; declare auth or set public: true",
+							gerrors.ErrInvalidAuthConfig, p.Name, s.Name, i))
+					}
+					continue
+				}
+				declared = true
+				if enabled {
+					where := fmt.Sprintf("platform %q service %q route[%d]", p.Name, s.Name, i)
+					errs = append(errs, validateRouteAuthRule(where, *r.Auth, cfg.Credentials)...)
 				}
 			}
 		}
 	}
 
-	var errs []error
-	switch {
-	case hasRouteAuth && !enabled:
+	if declared && !enabled {
 		errs = append(errs, fmt.Errorf("%w: routes declare auth but http_filters %q is not enabled",
 			gerrors.ErrInvalidAuthConfig, "auth"))
-	case enabled && !hasRouteAuth:
-		errs = append(errs, fmt.Errorf("%w: http_filters %q enabled but no route declares auth; every request would be denied",
-			gerrors.ErrInvalidAuthConfig, "auth"))
 	}
-	if !enabled {
+	return errs
+}
+
+// validateRouteAuthRule 校验单条 route 的鉴权声明：
+// public 与认证/授权要求互斥；非匿名 route 必须声明被网关接受的 credential。
+func validateRouteAuthRule(where string, auth RouteAuthConfig, accepted []string) []error {
+	if auth.Public {
+		var errs []error
+		if auth.Credential != "" {
+			errs = append(errs, fmt.Errorf("%w: %s is public but also declares credential %q",
+				gerrors.ErrInvalidAuthConfig, where, auth.Credential))
+		}
+		if len(auth.Require.Roles) > 0 || len(auth.Require.Scopes) > 0 {
+			errs = append(errs, fmt.Errorf("%w: %s is public but also declares authorization requirements",
+				gerrors.ErrInvalidAuthConfig, where))
+		}
 		return errs
 	}
 
-	cfg, ok := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig)
-	if !ok {
-		errs = append(errs, fmt.Errorf("%w: auth plugin config missing or of wrong type %T",
-			gerrors.ErrInvalidAuthConfig, gw.HTTPFilters.Configs["auth"]))
-		return errs
+	if auth.Credential == "" {
+		return []error{fmt.Errorf("%w: %s declares auth but no credential",
+			gerrors.ErrInvalidAuthConfig, where)}
 	}
-	errs = append(errs, validateCredentials(cfg.Credentials)...)
-	errs = append(errs, validateJWTVerifier(cfg.JWT)...)
-	return errs
+	if !slices.Contains(accepted, auth.Credential) {
+		return []error{fmt.Errorf("%w: %s requires credential %q not accepted by auth filter %v",
+			gerrors.ErrInvalidAuthConfig, where, auth.Credential, accepted)}
+	}
+	return nil
 }
 
 // validateCredentials 校验凭证类型都受支持

@@ -62,7 +62,10 @@ type JWTVerifierConfig struct {
 }
 
 type AuthPolicy struct {
-	Roles []string
+	Public     bool
+	Credential string
+	Roles      []string
+	Scopes     []string
 }
 
 type TransformerConfig struct {

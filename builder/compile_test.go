@@ -372,8 +372,8 @@ func authPlatforms() []PlatformConfig {
 			Transformer: "testT",
 			Instances:   []InstanceConfig{{Addr: "127.0.0.1:8081"}},
 			Routes: []RouteRuleConfig{
-				{PathPrefix: "/orders", Auth: &RouteAuthConfig{Roles: []string{"admin"}}},
-				{PathPrefix: "/orders/refund", Auth: &RouteAuthConfig{Roles: []string{"ops"}}},
+				{PathPrefix: "/orders", Auth: &RouteAuthConfig{Credential: gconst.AuthCredentialBearer, Require: RouteAuthRequire{Roles: []string{"admin"}}}},
+				{PathPrefix: "/orders/refund", Auth: &RouteAuthConfig{Credential: gconst.AuthCredentialBearer, Require: RouteAuthRequire{Roles: []string{"ops"}}}},
 			},
 		}},
 	}}
@@ -507,5 +507,122 @@ func TestCompileAggregatesAllErrors(t *testing.T) {
 	}
 	if !errors.Is(err, gerrors.ErrDuplicateServiceName) {
 		t.Errorf("err = %v, want also wrapping %v", err, gerrors.ErrDuplicateServiceName)
+	}
+}
+
+// oneRoutePlatform 构造一个只含一条 route 的平台，便于单条声明场景的用例
+func oneRoutePlatform(route RouteRuleConfig) []PlatformConfig {
+	return []PlatformConfig{{
+		Name: "shopA",
+		Host: []string{"api.shopA.com"},
+		Service: []ServiceConfig{{
+			Name:        "order",
+			Transformer: "testT",
+			Instances:   []InstanceConfig{{Addr: "127.0.0.1:8081"}},
+			Routes:      []RouteRuleConfig{route},
+		}},
+	}}
+}
+
+// TestCompileRouteAuthMissingDeclaration 启用 auth 时，未声明 auth 的 route 必须被拒绝（fail-closed）
+func TestCompileRouteAuthMissingDeclaration(t *testing.T) {
+	platforms := []PlatformConfig{{
+		Name: "shopA",
+		Host: []string{"api.shopA.com"},
+		Service: []ServiceConfig{{
+			Name:        "order",
+			Transformer: "testT",
+			Instances:   []InstanceConfig{{Addr: "127.0.0.1:8081"}},
+			Routes: []RouteRuleConfig{
+				{PathPrefix: "/orders", Auth: &RouteAuthConfig{Credential: gconst.AuthCredentialBearer}},
+				{PathPrefix: "/orders/refund"}, // 漏声明
+			},
+		}},
+	}}
+
+	_, err := Compile(authGateway(), platforms)
+	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
+		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
+	}
+}
+
+// TestCompileRouteAuthPublicExclusive public 与认证/授权要求互斥
+func TestCompileRouteAuthPublicExclusive(t *testing.T) {
+	cases := map[string]RouteAuthConfig{
+		"public with credential": {Public: true, Credential: gconst.AuthCredentialBearer},
+		"public with roles":      {Public: true, Require: RouteAuthRequire{Roles: []string{"admin"}}},
+		"public with scopes":     {Public: true, Require: RouteAuthRequire{Scopes: []string{"read"}}},
+	}
+	for name, auth := range cases {
+		t.Run(name, func(t *testing.T) {
+			auth := auth
+			_, err := Compile(authGateway(), oneRoutePlatform(RouteRuleConfig{PathPrefix: "/orders", Auth: &auth}))
+			if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
+				t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
+			}
+		})
+	}
+}
+
+// TestCompileRouteAuthMissingCredential 非匿名 route 未声明 credential 应被拒绝
+func TestCompileRouteAuthMissingCredential(t *testing.T) {
+	_, err := Compile(authGateway(), oneRoutePlatform(RouteRuleConfig{
+		PathPrefix: "/orders",
+		Auth:       &RouteAuthConfig{Require: RouteAuthRequire{Roles: []string{"admin"}}},
+	}))
+	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
+		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
+	}
+}
+
+// TestCompileRouteAuthCredentialNotAccepted route 要求的 credential 不在网关接受列表内应被拒绝
+func TestCompileRouteAuthCredentialNotAccepted(t *testing.T) {
+	_, err := Compile(authGateway(), oneRoutePlatform(RouteRuleConfig{
+		PathPrefix: "/orders",
+		Auth:       &RouteAuthConfig{Credential: "basic"},
+	}))
+	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
+		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
+	}
+}
+
+// TestCompileAuthPoliciesFullTable 策略表对每条 route 都产出条目（含 public），
+// 且编写态分层声明被展平为运行态的并列字段
+func TestCompileAuthPoliciesFullTable(t *testing.T) {
+	platforms := []PlatformConfig{{
+		Name: "shopA",
+		Host: []string{"api.shopA.com"},
+		Service: []ServiceConfig{{
+			Name:        "order",
+			Transformer: "testT",
+			Instances:   []InstanceConfig{{Addr: "127.0.0.1:8081"}},
+			Routes: []RouteRuleConfig{
+				{PathPrefix: "/public", Auth: &RouteAuthConfig{Public: true}},
+				{PathPrefix: "/orders", Auth: &RouteAuthConfig{Credential: gconst.AuthCredentialBearer, Require: RouteAuthRequire{Roles: []string{"admin"}}}},
+				{PathPrefix: "/reports", Auth: &RouteAuthConfig{Credential: gconst.AuthCredentialBearer, Require: RouteAuthRequire{Scopes: []string{"read"}}}},
+			},
+		}},
+	}}
+
+	cfg, err := Compile(authGateway(), platforms)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	ac := authConfigOf(t, cfg)
+	if len(ac.Policies) != 3 {
+		t.Fatalf("policies = %+v, want 3 entries (one per route)", ac.Policies)
+	}
+
+	pub := ac.Policies["shopA.order#0"]
+	if !pub.Public || pub.Credential != "" || len(pub.Roles) != 0 || len(pub.Scopes) != 0 {
+		t.Errorf("public policy = %+v, want only Public=true", pub)
+	}
+	roles := ac.Policies["shopA.order#1"]
+	if roles.Public || roles.Credential != gconst.AuthCredentialBearer || len(roles.Roles) != 1 || roles.Roles[0] != "admin" {
+		t.Errorf("roles policy = %+v, want credential bearer + roles [admin]", roles)
+	}
+	scopes := ac.Policies["shopA.order#2"]
+	if len(scopes.Scopes) != 1 || scopes.Scopes[0] != "read" {
+		t.Errorf("scopes policy = %+v, want scopes [read]", scopes)
 	}
 }
