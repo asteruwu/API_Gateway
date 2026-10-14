@@ -3,6 +3,7 @@ package builder
 import (
 	"errors"
 	"fmt"
+	"strconv"
 
 	gerrors "API_Gateway/pkg/errors"
 )
@@ -13,7 +14,7 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 		return nil, fmt.Errorf("%w: %w", gerrors.ErrInvalidConfig, errors.Join(errs...))
 	}
 
-	rules := flattenRoutes(platforms)
+	rules, policies := flattenRoutes(platforms)
 	errs = append(errs, validateRouteConflicts(rules)...)
 
 	service := flattenServices(platforms)
@@ -33,11 +34,13 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 	byTransformer := groupServicesByTransformer(platforms)
 	errs = append(errs, validateTransformerRefs(gw.Transformer, byTransformer)...)
 	errs = append(errs, validateServiceTransformer(platforms)...)
+	errs = append(errs, validateRouteAuth(gw, platforms)...)
 
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("%w: %w", gerrors.ErrInvalidConfig, errors.Join(errs...))
 	}
 
+	httpFilters = attachAuthPolicies(httpFilters, policies)
 	httpFilters = append([]any{RouterConfig{Rules: rules}}, httpFilters...)
 
 	return &Config{
@@ -85,23 +88,47 @@ func flattenServices(platforms []PlatformConfig) []ServiceRef {
 	return refs
 }
 
-// flattenRoutes 把各 platform 下 service 的 routes 压平成 RouterRule 列表
-func flattenRoutes(platforms []PlatformConfig) []RouterRule {
+// flattenRoutes 把各 platform 下 service 的 routes 压平成 RouterRule 列表，
+// 同一次遍历里为每条 route 生成稳定 ID，并反向聚合出「RouteID → 策略」绑定表。
+func flattenRoutes(platforms []PlatformConfig) ([]RouterRule, map[string]AuthPolicy) {
 	rules := make([]RouterRule, 0)
+	policies := make(map[string]AuthPolicy)
 	for _, p := range platforms {
 		for _, s := range p.Service {
 			service := qualifiedServiceName(p.Name, s.Name)
-			for _, r := range s.Routes {
+			for i, r := range s.Routes {
+				id := routeID(service, i)
 				rules = append(rules, RouterRule{
+					ID:         id,
 					Hosts:      p.Host,
 					PathPrefix: r.PathPrefix,
 					Methods:    r.Methods,
 					Service:    service,
 				})
+				if r.Auth != nil {
+					policies[id] = AuthPolicy{Roles: r.Auth.Roles}
+				}
 			}
 		}
 	}
-	return rules
+	return rules, policies
+}
+
+func routeID(service string, idx int) string {
+	return service + "#" + strconv.Itoa(idx)
+}
+
+// attachAuthPolicies 把反向聚合出的策略表装进 auth filter 配置
+func attachAuthPolicies(filters []any, policies map[string]AuthPolicy) []any {
+	for i, f := range filters {
+		cfg, ok := f.(AuthFilterConfig)
+		if !ok {
+			continue
+		}
+		cfg.Policies = policies
+		filters[i] = cfg
+	}
+	return filters
 }
 
 func qualifiedServiceName(platform, service string) string {

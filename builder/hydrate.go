@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"API_Gateway/pkg/tools"
 	gerrors "API_Gateway/pkg/errors"
+	"API_Gateway/pkg/tools"
 )
 
 // pluginHydrators 插件注册表
@@ -91,10 +91,19 @@ func hydrateJWTVerifier(raw any) (JWTVerifierConfig, error) {
 	if !ok {
 		return cfg, fmt.Errorf("expected map, got %T", raw)
 	}
-	cfg.Algorithm, _ = m["algorithm"].(string)
-	cfg.SecretEnv, _ = m["secret_env"].(string)
-	cfg.Issuer, _ = m["issuer"].(string)
-	cfg.Audience, _ = m["audience"].(string)
+	var err error
+	if cfg.Algorithm, err = tools.ToStringField(m, "algorithm"); err != nil {
+		return cfg, err
+	}
+	if cfg.SecretEnv, err = tools.ToStringField(m, "secret_env"); err != nil {
+		return cfg, err
+	}
+	if cfg.Issuer, err = tools.ToStringField(m, "issuer"); err != nil {
+		return cfg, err
+	}
+	if cfg.Audience, err = tools.ToStringField(m, "audience"); err != nil {
+		return cfg, err
+	}
 	if v, ok := m["leeway"]; ok {
 		s, ok := v.(string)
 		if !ok {

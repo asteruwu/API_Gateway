@@ -50,16 +50,19 @@ type RouterRule struct {
 type AuthFilterConfig struct {
 	Credentials []string
 	JWT         JWTVerifierConfig
-	Policies    map[string]RouteAuthConfig
+	Policies    map[string]AuthPolicy
 }
 
 type JWTVerifierConfig struct {
 	Algorithm string
 	SecretEnv string
-	Secret    []byte
 	Issuer    string
 	Audience  string
 	Leeway    time.Duration
+}
+
+type AuthPolicy struct {
+	Roles []string
 }
 
 type TransformerConfig struct {

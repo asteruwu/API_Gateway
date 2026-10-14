@@ -34,6 +34,9 @@ var (
 
 	// ErrInvalidPoolConfig 连接池配置非法（负数或自相矛盾的取值）
 	ErrInvalidPoolConfig = errors.New("builder: invalid pool config")
+
+	// ErrInvalidAuthConfig 鉴权配置非法，或路由鉴权声明与 auth 插件启用状态不一致
+	ErrInvalidAuthConfig = errors.New("builder: invalid auth config")
 )
 
 // connector errors

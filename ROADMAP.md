@@ -70,7 +70,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
 
 ## 当前进度
 
-> 最后更新：2026-10-11　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
+> 最后更新：2026-10-14　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
 
 - [x] **v00 项目初始化** —— 完成，数据流已闭合
   - [x] `main.go`：按逆序完成编排（backend → handler → connector）
@@ -116,7 +116,12 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
   - [x] 配置：`gateway.pool` 解析/校验/派生；每个 service 必须绑定 transformer（编译期校验）
   - [x] 测试：`backend/pool/pool_test.go`（借出/复用/超限/失效/关闭/并发）+ `testbed/reuse_test.go`（`MaxConn=1` 断言后端仅建 1 条连接）
   - [x] 连接池并发内核重做（分支 `v06/connPool-waiter-handoff`）：去掉 `sync.Cond` + `slots` 令牌 channel，改为「锁保护的空闲切片（可下标扫描）+ `numOpen` 配额 + 每个等待者一个唤醒 channel（归还/腾配额只唤醒一个）」。决策全在锁内（有 idle 必复用，杜绝「有空闲仍新建」）；reaper 继续按下标扫描、无需 drain（避免空闲空窗抖动）；等待超时改用等待者本地 `time.NewTimer`，并处理「超时 vs 被唤醒」竞态。新增测试 `TestGetPrefersIdleOverDial` / `TestWaiterWakesExactlyOne` / `TestConcurrentGetPutWithReaper`；全量 `go test ./... -race` 通过。
-- [ ] v07 安全认证
+- [ ] **v07 安全认证** —— 进行中（步骤 1-4 已实现，5-9 重组为修订规划阶段 B–F，见「下一步」）
+  - [x] 步骤 1：Router 提前到 filter 链最前、删 `TestFilter` 占位、修 `compile_test` 旧断言
+  - [x] 步骤 2：配置结构——`RouterRule.ID`、`AuthFilterConfig`、`JWTVerifierConfig`（编写态/运行态分层）
+  - [x] 步骤 3：hydrate 注册 `auth` 插件，YAML → `AuthFilterConfig`
+  - [x] 步骤 4：编译与校验——`RouteID` 生成、策略表反向聚合、`validateRouteAuth` 一致性校验、`AuthFilterConfig` 分层（密钥改声明式 `SecretEnv`）
+  - [ ] 步骤 5-9 → 重组为修订规划阶段 B–F（消息模型 / 鉴权 filter / 装配 / 测试 / 文档）
 - [ ] v08 管道细化
 - [ ] v09 协议扩展
 - [ ] v10 最终完善
@@ -149,7 +154,7 @@ clientConn → Decode → message.Request → filters
 - `ErrBodyTooLarge`：目前归入「边界不可信错误」直接断连、不写 413；若后续想给客户端明确反馈，可在断连前写一次 413 —— 与 v10「错误处理统一」相关
 - 鉴权（v07）落地后处理：
   - 客户端连接无写超时：`handleProcessResponse` 的 `conn.Write` 未设 write deadline，慢读客户端可长期占住 goroutine
-  - `buildFilter` 末尾硬塞的 `TestFilter`：它总返回非 nil 响应，`Process` 开始消费 filter 短路响应前必须删掉
+  - ~~`buildFilter` 末尾硬塞的 `TestFilter`~~ —— 已解决（步骤 1 已删除占位；`Process` 消费 filter 短路响应见修订规划阶段 B3）
   - 错误响应 body 直接回 `err.Error()`，会把后端地址、拨号原因等内部细节暴露给客户端，需改为对外文案 + 内部日志
   - Router 未做 `path.Clean`：`/orders/../admin` 会命中 `/orders`，按路由差异化鉴权时构成绕过
   - Router 前缀匹配无路径段边界：`/ordersXYZ` 会命中 `/orders`
@@ -159,6 +164,7 @@ clientConn → Decode → message.Request → filters
 - v08 处理：
   - 负载均衡：`BManager.Call` 写死 `instances[0]`
   - 插件注册表：`pluginHydrators` 被 tcp/http filter、transformer 三类共用一个命名空间，错位引用（如把 `tcp_limit` 写进 `http_filters`）到 `buildFilter` 运行时才报错
+- 鉴权后续扩展（详见「下一步」的「明确不在 v07」）：verifier 配置注册表 / 多 issuer / JWKS / RS256；有状态 verifier（session、token 黑名单）；出站身份透传防伪签名 / mTLS（归 transformer）；更多授权维度（apikey subscription、ABAC）；鉴权 allow/deny 审计日志
 - filter 短路响应路径（filter 拒绝时直接产出响应写回、跳过后续链路）留 v07/v08 落地；编码失败（`errE`）时的断连策略留 v10 走查
 - ~~`conn.Write` 返回值未检查~~ —— 已解决（v02 已检查返回值）
 - ~~`Decode` 缺 error 返回~~ —— 已解决（v02 骨架已带 error 返回）
@@ -172,19 +178,70 @@ clientConn → Decode → message.Request → filters
 - 假后端协议和 transformer 绑定演进：现为 **4 字节长度前缀帧**（模拟协议，fakebackend 与 transformer 对称实现）；后续接真实协议（gRPC/MCP）时替换实现。
 - 行为模式先做 `echo` + `fixed`，`error`/`delay` 等做到重试/熔断（v03/v06）时再加。
 
-## 下一步（v07 安全认证）
+## 下一步（v07 安全认证 · 修订规划）
 
-连接池的并发内核重做已在 v06 落地（见「当前进度」v06 末条）：`sync.Cond` 与 `slots` 令牌被替换为「锁保护的空闲切片 + `numOpen` 配额 + 每个等待者一个唤醒 channel」，只唤醒一个等待者，已无惊群。下一版进入 **v07 安全认证**。
+> 步骤 1-4 已落地（Router 提前、配置结构、hydrate 注册、`RouteID` + 策略表 + 校验）。以下为结合「认证分层」讨论重排的剩余规划。
 
-1. 目标
-   1. `http_filter` 落地真实鉴权 filter（首选 JWT 校验）：从请求头取 token，验签 + 校验过期/声明，失败即拒绝
-   2. 打通 **filter 短路响应路径**：filter 拒绝时直接产出 `message.Response` 写回并终止本请求链，不再继续后续 filter / 借后端连接 / transformer
-   3. 鉴权产物向后续环节传递（如写入 `message.Request` 供路由/转发使用），遵守「`message` 是唯一中间表示」的约定
-2. 现状与切入点
-   1. `HTTPFilter.HandleHTTPFilt(req) (*message.Response, error)` 已预留非空响应的返回位，但 `handler.Process` 目前只消费 error、忽略返回的响应——v07 需在 `Process` 的 filter 编排里消费非空响应并短路
-   2. `http_filter` 现有 `Router` 与占位 `TestFilter`；鉴权 filter 按同样模式新增实现
-   3. 鉴权 filter 与 `gateway.yaml` 的 `http_filters` 插件注册表（`hydrate.go` 的 `pluginHydrators` + `Enable` 开关）联动，保持配置驱动一致性
-3. 影响范围与前置
-   1. 主要改 `handler/http_filter/`（新增鉴权 filter）+ `handler/handler.go`（消费 filter 短路响应）+ `builder/hydrate.go`（注册插件）
-   2. 鉴权失败复用 `ErrorResponse` 的错误域映射（401/403）；错误域常量按需在 `pkg/errors` 增补
-   3. 新增鉴权 filter 单元测试 + testbed 端到端用例（合法 token / 缺失或非法 token 对照），不破坏既有路由/限流链路
+### 设计契约（实现须遵守）
+
+1. **策略表随插件配置走**：`AuthFilterConfig.Policies` 由 `Compile` 反向聚合、**全量**（每条 route 一条策略）；`RouteID = "platform.service#idx"`，Router 写入、auth filter 查询。
+2. **密钥声明式**：`JWTVerifierConfig` 只留 `SecretEnv`，密钥在 filter 初始化时解析；builder 不读环境变量。
+3. **逐条声明**：auth 启用时，**每条 route 必须显式声明 `auth`**；匿名用 `public: true` 显式表达（fail-closed）。
+4. **四段式**：① 凭证提取 → ② 认证（含凭证有效性）→ ③ 授权（有无此接口权限）→ ④ 身份透传。
+5. **认证 / 授权分离**：② 失败 401、③ 失败 403；**空 roles 只在 ③ 跳过角色检查，② 验签必须无条件先做**（防绕过）。
+6. **可插拔**：② 抽象成代码层 `Verifier` 接口；配置层注册表推迟（等第二个机制出现）。
+7. **授权维度用并列字段 + 维度检查函数**（`checkRoles`/`checkScopes`/...），不用泛化 requirements 列表。
+8. **Identity 走 `message.Request`**（零依赖归一化结构）；入站伪造身份头必须剥离；出站转发/签名归 transformer。
+
+### 阶段 A —— 配置与编译层收口（builder）
+
+- A1 运行态 `AuthPolicy` 增 `Public`/`Credential`/`Scopes`（`Roles` 已有）；写态 `RouteAuthConfig` 同步加 `public`/`credential`/`scopes`。
+- A2 `flattenRoutes` 对**每条** route 产策略（不再仅 `Auth != nil`），带 `Public`/`Credential`/`Roles`/`Scopes`。
+- A3 `validateRouteAuth` 升级：启用时逐条要求 `Auth != nil`；`Public` 与其它要求互斥；`required credential ∈ filter accepted`；保留「未启用却声明 auth」报错。
+- A4 hydrate 适配新可选字段（类型不符报错）。
+- A5 单测：漏声明、public 互斥、credential 非法、策略表全量。
+- 主要文件：`builder/{config,platform,compile,validate,hydrate}.go`、`builder/compile_test.go`。
+
+### 阶段 B —— 消息模型与路由
+
+- B1 `message.Request` 增 `RouteID string` 与 `Identity *Identity`（`{Subject; Roles; Claims}`，零依赖）。
+- B2 Router 命中后写入 `req.RouteID`、`req.Service`。
+- B3 **打通 filter 短路**：`handler.Process` 消费 filter 返回的非空 `*message.Response`，写回并终止（跳过后续 filter / 借连接 / transformer）。
+- 主要文件：`handler/message/message.go`、`handler/http_filter/router.go`、`handler/handler.go`。
+
+### 阶段 C —— 鉴权 filter
+
+- C1 定义 `Verifier` 接口 + JWT 实现（stdlib：base64url + HMAC-SHA256 + `exp/nbf/iss/aud/leeway` + 角色 claim 归一化）。
+- C2 `AuthFilter` 四段编排：① 按 `policy.Credential` 提取 → ② `Verify` → ③ 维度检查（`Public` 跳①②；空 `Roles` 只跳角色、保留验签）→ ④ 回写 `req.Identity`。
+- C3 失败语义：②→`ErrUnauthorized`(401, `WWW-Authenticate: Bearer`)、③→`ErrForbidden`(403，`pkg/errors` 新增)。
+- C4 剥离入站伪造身份头（`Del` 客户端传入的 `X-User-Id`/`X-Roles` 等）。
+- C5 初始化：从 `SecretEnv` 解析密钥 + `AuthMinHS256SecretLen` 长度校验；`RolesClaim` 可配置。
+- 主要文件：`handler/http_filter/auth*.go`、`pkg/errors/errors.go`。
+
+### 阶段 D —— 装配
+
+- D1 `buildFilter` 增加 `case builder.AuthFilterConfig:`，构造 `AuthFilter`。
+- 主要文件：`handler/handler.go`。
+
+### 阶段 E —— 测试
+
+- E1 单元：Verifier（合法/过期/篡改/缺 claim）、AuthFilter 三态、短路。
+- E2 testbed 端到端：合法 200 / 缺失或非法 401 / 角色不足 403 / `public` 免鉴权 / 拒绝时后端未被触达；不破坏既有路由+限流链路。
+- 主要文件：`handler/http_filter/*_test.go`、`testbed/auth_test.go`。
+
+### 阶段 F —— 配置样例与文档
+
+- F1 `gateway.yaml` 启用 `auth` 并配 `credentials`/`jwt`；`platform.yaml` 每条 route 显式声明 auth（含 `public: true` 示例）。
+- F2 ROADMAP 勾选 + 补充已知待办。
+
+### 明确不在 v07（留后续）
+
+- Verifier 配置注册表 / 多机制 / 多 issuer / JWKS / RS256。
+- 有状态 verifier（session、token 黑名单）。
+- 出站身份透传与防伪签名 / mTLS（归 transformer，v09 真实协议时落地）。
+- 更多授权维度（apikey subscription、ABAC、IP 白名单）。
+- 限流 / 配额（v08）。
+
+### 顺序
+
+`A → B → C → D → E → F`。A 定型字段与校验，C 才有稳定契约；B 的 `RouteID`/`Identity` 是 C 的输入输出，且 B3 短路必须先于 C，否则拒绝时无法终止链路。

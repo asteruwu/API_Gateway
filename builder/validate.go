@@ -3,6 +3,7 @@ package builder
 import (
 	"fmt"
 
+	gconst "API_Gateway/pkg/constant"
 	gerrors "API_Gateway/pkg/errors"
 	"API_Gateway/pkg/tools"
 )
@@ -126,4 +127,80 @@ func validatePoolConfig(cfg PoolConfig) []error {
 		errs = append(errs, fmt.Errorf("%w: pool durations must not be negative", gerrors.ErrInvalidPoolConfig))
 	}
 	return errs
+}
+
+// validateRouteAuth 校验路由鉴权与 auth 插件的引用一致性，以及鉴权插件自身的参数
+func validateRouteAuth(gw GatewayConfig, platforms []PlatformConfig) []error {
+	enabled := pluginEnabled(gw.HTTPFilters, "auth")
+	hasRouteAuth := false
+	for _, p := range platforms {
+		for _, s := range p.Service {
+			for _, r := range s.Routes {
+				if r.Auth != nil {
+					hasRouteAuth = true
+				}
+			}
+		}
+	}
+
+	var errs []error
+	switch {
+	case hasRouteAuth && !enabled:
+		errs = append(errs, fmt.Errorf("%w: routes declare auth but http_filters %q is not enabled",
+			gerrors.ErrInvalidAuthConfig, "auth"))
+	case enabled && !hasRouteAuth:
+		errs = append(errs, fmt.Errorf("%w: http_filters %q enabled but no route declares auth; every request would be denied",
+			gerrors.ErrInvalidAuthConfig, "auth"))
+	}
+	if !enabled {
+		return errs
+	}
+
+	cfg, ok := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig)
+	if !ok {
+		errs = append(errs, fmt.Errorf("%w: auth plugin config missing or of wrong type %T",
+			gerrors.ErrInvalidAuthConfig, gw.HTTPFilters.Configs["auth"]))
+		return errs
+	}
+	errs = append(errs, validateCredentials(cfg.Credentials)...)
+	errs = append(errs, validateJWTVerifier(cfg.JWT)...)
+	return errs
+}
+
+// validateCredentials 校验凭证类型都受支持
+func validateCredentials(creds []string) []error {
+	if len(creds) == 0 {
+		return []error{fmt.Errorf("%w: credentials must not be empty", gerrors.ErrInvalidAuthConfig)}
+	}
+	var errs []error
+	for _, c := range creds {
+		if c != gconst.AuthCredentialBearer {
+			errs = append(errs, fmt.Errorf("%w: unsupported credential %q", gerrors.ErrInvalidAuthConfig, c))
+		}
+	}
+	return errs
+}
+
+// validateJWTVerifier 校验 JWT 校验参数：算法受支持、密钥来源已声明、容差非负
+func validateJWTVerifier(cfg JWTVerifierConfig) []error {
+	var errs []error
+	if cfg.Algorithm != gconst.AuthAlgorithmHS256 {
+		errs = append(errs, fmt.Errorf("%w: unsupported jwt algorithm %q", gerrors.ErrInvalidAuthConfig, cfg.Algorithm))
+	}
+	if cfg.SecretEnv == "" {
+		errs = append(errs, fmt.Errorf("%w: jwt.secret_env is required", gerrors.ErrInvalidAuthConfig))
+	}
+	if cfg.Leeway < 0 {
+		errs = append(errs, fmt.Errorf("%w: jwt.leeway must not be negative", gerrors.ErrInvalidAuthConfig))
+	}
+	return errs
+}
+
+func pluginEnabled(set PluginSet, name string) bool {
+	for _, n := range set.Enabled {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }

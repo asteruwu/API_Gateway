@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	gconst "API_Gateway/pkg/constant"
 	gerrors "API_Gateway/pkg/errors"
 )
 
@@ -338,6 +339,158 @@ func TestCompileTransformerUnknownServiceRef(t *testing.T) {
 	_, err := Compile(gw, platforms)
 	if !errors.Is(err, gerrors.ErrInvalidConfig) || !errors.Is(err, gerrors.ErrTransformerNotFound) {
 		t.Errorf("err = %v, want wrapping %v and %v", err, gerrors.ErrInvalidConfig, gerrors.ErrTransformerNotFound)
+	}
+}
+
+// authGateway 返回一份启用了 auth 插件（含合法 JWT 参数）与 testT transformer 的网关配置
+func authGateway() GatewayConfig {
+	return GatewayConfig{
+		HTTPFilters: PluginSet{
+			Enabled: []string{"auth"},
+			Configs: map[string]any{"auth": AuthFilterConfig{
+				Credentials: []string{gconst.AuthCredentialBearer},
+				JWT: JWTVerifierConfig{
+					Algorithm: gconst.AuthAlgorithmHS256,
+					SecretEnv: "JWT_SECRET",
+				},
+			}},
+		},
+		Transformer: PluginSet{
+			Enabled: []string{"testT"},
+			Configs: map[string]any{"testT": TestTransformerConfig{}},
+		},
+	}
+}
+
+// authPlatforms 返回一个含两条声明了 auth 的路由的平台配置
+func authPlatforms() []PlatformConfig {
+	return []PlatformConfig{{
+		Name: "shopA",
+		Host: []string{"api.shopA.com"},
+		Service: []ServiceConfig{{
+			Name:        "order",
+			Transformer: "testT",
+			Instances:   []InstanceConfig{{Addr: "127.0.0.1:8081"}},
+			Routes: []RouteRuleConfig{
+				{PathPrefix: "/orders", Auth: &RouteAuthConfig{Roles: []string{"admin"}}},
+				{PathPrefix: "/orders/refund", Auth: &RouteAuthConfig{Roles: []string{"ops"}}},
+			},
+		}},
+	}}
+}
+
+// authConfigOf 从编译产物里取出 auth filter 的运行态配置
+func authConfigOf(t *testing.T, cfg *Config) AuthFilterConfig {
+	t.Helper()
+	for _, f := range cfg.Handler.Filter.Filters {
+		if ac, ok := f.(AuthFilterConfig); ok {
+			return ac
+		}
+	}
+	t.Fatalf("auth filter config not found in %+v", cfg.Handler.Filter.Filters)
+	return AuthFilterConfig{}
+}
+
+// TestCompileRouteIDsAndAuthPolicies 校验 compile 为每条 route 生成唯一 ID，
+// 并把 route 声明的 auth 反向聚合进 auth filter 的策略表（以 RouteID 为 key）
+func TestCompileRouteIDsAndAuthPolicies(t *testing.T) {
+	cfg, err := Compile(authGateway(), authPlatforms())
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	routerCfg, ok := cfg.Handler.Filter.Filters[0].(RouterConfig)
+	if !ok {
+		t.Fatalf("first filter = %T, want RouterConfig", cfg.Handler.Filter.Filters[0])
+	}
+	if len(routerCfg.Rules) != 2 {
+		t.Fatalf("router rules = %+v, want 2", routerCfg.Rules)
+	}
+
+	seen := make(map[string]bool, len(routerCfg.Rules))
+	for _, r := range routerCfg.Rules {
+		if r.ID == "" {
+			t.Errorf("route ID is empty for path %q", r.PathPrefix)
+		}
+		if seen[r.ID] {
+			t.Errorf("duplicate route ID %q", r.ID)
+		}
+		seen[r.ID] = true
+	}
+
+	ac := authConfigOf(t, cfg)
+	if len(ac.Policies) != 2 {
+		t.Fatalf("policies = %+v, want 2 entries", ac.Policies)
+	}
+	wantRoles := map[string]string{
+		"shopA.order#0": "admin",
+		"shopA.order#1": "ops",
+	}
+	for id, role := range wantRoles {
+		p, ok := ac.Policies[id]
+		if !ok {
+			t.Errorf("policy missing for route %q", id)
+			continue
+		}
+		if len(p.Roles) != 1 || p.Roles[0] != role {
+			t.Errorf("policy %q roles = %v, want [%s]", id, p.Roles, role)
+		}
+	}
+}
+
+// TestCompileRouteAuthWithoutPlugin 路由声明了 auth 但未启用 auth 插件，编译期应拒绝
+func TestCompileRouteAuthWithoutPlugin(t *testing.T) {
+	gw := authGateway()
+	gw.HTTPFilters = PluginSet{} // 不启用 auth
+
+	_, err := Compile(gw, authPlatforms())
+	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
+		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
+	}
+}
+
+// TestCompileAuthEnabledWithoutRouteAuth 启用了 auth 却没有任何路由声明 auth，
+// 运行期会全量拒绝，属编译期可确定的错误
+func TestCompileAuthEnabledWithoutRouteAuth(t *testing.T) {
+	platforms := []PlatformConfig{{
+		Name: "shopA",
+		Service: []ServiceConfig{{
+			Name:        "order",
+			Transformer: "testT",
+			Instances:   []InstanceConfig{{Addr: "127.0.0.1:8081"}},
+			Routes:      []RouteRuleConfig{{PathPrefix: "/orders"}},
+		}},
+	}}
+
+	_, err := Compile(authGateway(), platforms)
+	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
+		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
+	}
+}
+
+// TestCompileAuthUnsupportedCredential 不支持的凭证类型应被拒绝
+func TestCompileAuthUnsupportedCredential(t *testing.T) {
+	gw := authGateway()
+	ac := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig)
+	ac.Credentials = []string{"basic"}
+	gw.HTTPFilters.Configs["auth"] = ac
+
+	_, err := Compile(gw, authPlatforms())
+	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
+		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
+	}
+}
+
+// TestCompileAuthInvalidJWT 不支持的算法、缺少 secret_env 都应被拒绝
+func TestCompileAuthInvalidJWT(t *testing.T) {
+	gw := authGateway()
+	ac := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig)
+	ac.JWT = JWTVerifierConfig{Algorithm: "RS256"} // 算法不支持且缺 secret_env
+	gw.HTTPFilters.Configs["auth"] = ac
+
+	_, err := Compile(gw, authPlatforms())
+	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
+		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
 	}
 }
 
