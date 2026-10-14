@@ -65,14 +65,14 @@ func TestCompileSuccess(t *testing.T) {
 		}
 	}
 
-	// 路由规则应作为最后一个 http filter 追加，且 service 名已限定
+	// 路由规则应作为第一个 http filter 插入，且 service 名已限定
 	filters := cfg.Handler.Filter.Filters
 	if len(filters) == 0 {
-		t.Fatalf("expected router config appended to http filters")
+		t.Fatalf("expected router config prepended to http filters")
 	}
-	routerCfg, ok := filters[len(filters)-1].(RouterConfig)
+	routerCfg, ok := filters[0].(RouterConfig)
 	if !ok {
-		t.Fatalf("last http filter = %T, want RouterConfig", filters[len(filters)-1])
+		t.Fatalf("first http filter = %T, want RouterConfig", filters[0])
 	}
 	if len(routerCfg.Rules) != 2 {
 		t.Fatalf("router rules = %+v, want 2 rules", routerCfg.Rules)
@@ -207,7 +207,7 @@ func TestCompilePluginSetOnlyEnabledAssembled(t *testing.T) {
 }
 
 func TestCompileHTTPPluginSetAssembledWithRouter(t *testing.T) {
-	// http_filters 同理，且 compile 自动派生的 Router 始终追加在最后
+	// http_filters 同理，且 compile 自动派生的 Router 始终排在最前
 	gw := GatewayConfig{
 		HTTPFilters: PluginSet{
 			Enabled: []string{"testF"},
@@ -223,10 +223,10 @@ func TestCompileHTTPPluginSetAssembledWithRouter(t *testing.T) {
 	}
 	filters := cfg.Handler.Filter.Filters
 	if len(filters) != 2 {
-		t.Fatalf("http filters = %+v, want [testF, router]", filters)
+		t.Fatalf("http filters = %+v, want [router, testF]", filters)
 	}
-	if _, ok := filters[len(filters)-1].(RouterConfig); !ok {
-		t.Errorf("last http filter = %T, want RouterConfig", filters[len(filters)-1])
+	if _, ok := filters[0].(RouterConfig); !ok {
+		t.Errorf("first http filter = %T, want RouterConfig", filters[0])
 	}
 }
 

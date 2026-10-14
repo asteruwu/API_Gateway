@@ -148,7 +148,6 @@ func buildFilter(cfgs []any) ([]hf.HTTPFilter, error) {
 			return nil, gerrors.ErrInitializeHTTPFiltersFailed
 		}
 	}
-	filters = append(filters, &hf.TestFilter{Name: "testF"})
 
 	return filters, nil
 }

@@ -38,7 +38,7 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 		return nil, fmt.Errorf("%w: %w", gerrors.ErrInvalidConfig, errors.Join(errs...))
 	}
 
-	httpFilters = append(httpFilters, RouterConfig{Rules: rules})
+	httpFilters = append([]any{RouterConfig{Rules: rules}}, httpFilters...)
 
 	return &Config{
 		Connector: ConnectorConfig{
