@@ -20,7 +20,14 @@ type Request struct {
 	RemoteAddr string
 
 	// —— 网关决策：filter 产出，编排层消费 ——
-	Service string
+	Service  string
+	RouteID  string
+	Identity *Identity
+}
+
+type Identity struct {
+	Subject string
+	Roles   []string
 }
 
 type Response struct {

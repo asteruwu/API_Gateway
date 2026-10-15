@@ -69,6 +69,7 @@ func (r *Router) HandleHTTPFilt(req *message.Request) (*message.Response, error)
 			continue
 		}
 		req.Service = rule.Service
+		req.RouteID = rule.ID
 		return nil, nil
 	}
 	return nil, fmt.Errorf("%w: path %q host %q", gerrors.ErrRouteNotFound, path, req.Host)

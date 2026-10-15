@@ -162,3 +162,26 @@ func TestNewRouterInvalidRule(t *testing.T) {
 		}
 	}
 }
+
+// TestRouterWritesRouteID 命中后 Router 应同时写入 route ID 与服务名，供下游按 RouteID 查策略
+func TestRouterWritesRouteID(t *testing.T) {
+	r, err := NewRouter(builder.RouterConfig{
+		Rules: []builder.RouterRule{
+			{ID: "shopA.order#0", Hosts: []string{"api.shopA.com"}, PathPrefix: "/orders", Service: "shopA.order"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new router: %v", err)
+	}
+
+	req := testRequest("GET", "api.shopA.com", "/orders/1")
+	if _, err := r.HandleHTTPFilt(req); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if req.RouteID != "shopA.order#0" {
+		t.Errorf("RouteID = %q, want %q", req.RouteID, "shopA.order#0")
+	}
+	if req.Service != "shopA.order" {
+		t.Errorf("Service = %q, want %q", req.Service, "shopA.order")
+	}
+}
