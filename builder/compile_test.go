@@ -350,7 +350,6 @@ func authGateway() GatewayConfig {
 			Configs: map[string]any{"auth": AuthFilterConfig{
 				Credentials: []string{gconst.AuthCredentialBearer},
 				JWT: JWTVerifierConfig{
-					Algorithm: gconst.AuthAlgorithmHS256,
 					SecretEnv: "JWT_SECRET",
 				},
 			}},
@@ -481,11 +480,11 @@ func TestCompileAuthUnsupportedCredential(t *testing.T) {
 	}
 }
 
-// TestCompileAuthInvalidJWT 不支持的算法、缺少 secret_env 都应被拒绝
+// TestCompileAuthInvalidJWT 缺少 secret_env 应被拒绝
 func TestCompileAuthInvalidJWT(t *testing.T) {
 	gw := authGateway()
 	ac := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig)
-	ac.JWT = JWTVerifierConfig{Algorithm: "RS256"} // 算法不支持且缺 secret_env
+	ac.JWT = JWTVerifierConfig{} // 缺 secret_env
 	gw.HTTPFilters.Configs["auth"] = ac
 
 	_, err := Compile(gw, authPlatforms())

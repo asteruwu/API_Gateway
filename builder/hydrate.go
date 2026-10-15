@@ -92,9 +92,6 @@ func hydrateJWTVerifier(raw any) (JWTVerifierConfig, error) {
 		return cfg, fmt.Errorf("expected map, got %T", raw)
 	}
 	var err error
-	if cfg.Algorithm, err = tools.ToStringField(m, "algorithm"); err != nil {
-		return cfg, err
-	}
 	if cfg.SecretEnv, err = tools.ToStringField(m, "secret_env"); err != nil {
 		return cfg, err
 	}

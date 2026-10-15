@@ -54,7 +54,6 @@ type AuthFilterConfig struct {
 }
 
 type JWTVerifierConfig struct {
-	Algorithm string
 	SecretEnv string
 	Issuer    string
 	Audience  string

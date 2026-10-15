@@ -16,7 +16,6 @@ func TestHydrateAuthValid(t *testing.T) {
 				"auth": map[string]any{
 					"credentials": []any{"bearer"},
 					"jwt": map[string]any{
-						"algorithm":  "HS256",
 						"secret_env": "JWT_SECRET",
 					},
 				},
@@ -34,8 +33,8 @@ func TestHydrateAuthValid(t *testing.T) {
 	if len(cfg.Credentials) != 1 || cfg.Credentials[0] != "bearer" {
 		t.Errorf("credentials = %v, want [bearer]", cfg.Credentials)
 	}
-	if cfg.JWT.Algorithm != "HS256" || cfg.JWT.SecretEnv != "JWT_SECRET" {
-		t.Errorf("jwt = %+v, want HS256/JWT_SECRET", cfg.JWT)
+	if cfg.JWT.SecretEnv != "JWT_SECRET" {
+		t.Errorf("jwt = %+v, want secret_env JWT_SECRET", cfg.JWT)
 	}
 }
 

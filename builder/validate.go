@@ -220,9 +220,6 @@ func validateCredentials(creds []string) []error {
 // validateJWTVerifier 校验 JWT 校验参数：算法受支持、密钥来源已声明、容差非负
 func validateJWTVerifier(cfg JWTVerifierConfig) []error {
 	var errs []error
-	if cfg.Algorithm != gconst.AuthAlgorithmHS256 {
-		errs = append(errs, fmt.Errorf("%w: unsupported jwt algorithm %q", gerrors.ErrInvalidAuthConfig, cfg.Algorithm))
-	}
 	if cfg.SecretEnv == "" {
 		errs = append(errs, fmt.Errorf("%w: jwt.secret_env is required", gerrors.ErrInvalidAuthConfig))
 	}
