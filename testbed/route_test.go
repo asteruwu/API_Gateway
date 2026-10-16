@@ -138,6 +138,16 @@ func TestHostRouteDispatch(t *testing.T) {
 		t.Errorf("shopB /orders/1: status=%d body=%q, want 200 resp-from-svcB", status, got)
 	}
 
+	// Host 归一化：带端口 / 大小写变体仍应命中同一平台
+	status, got = postViaKeepAlive(t, conn, reader, "api.shopA.com:9995", "/orders/3", []byte("hello"))
+	if status != http.StatusOK || string(got) != "resp-from-svcA" {
+		t.Errorf("shopA:9995 /orders/3: status=%d body=%q, want 200 resp-from-svcA", status, got)
+	}
+	status, got = postViaKeepAlive(t, conn, reader, "API.ShopA.COM", "/orders/4", []byte("hello"))
+	if status != http.StatusOK || string(got) != "resp-from-svcA" {
+		t.Errorf("API.ShopA.COM /orders/4: status=%d body=%q, want 200 resp-from-svcA", status, got)
+	}
+
 	// shopA 组没有 /users 且无通配分组，404 后 keep-alive 继续可用
 	status, _ = postViaKeepAlive(t, conn, reader, "api.shopA.com", "/users", []byte("hello"))
 	if status != http.StatusNotFound {

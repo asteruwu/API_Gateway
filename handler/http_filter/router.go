@@ -3,6 +3,8 @@ package httpfilter
 import (
 	"errors"
 	"fmt"
+	"net"
+	"path"
 	"slices"
 	"strings"
 
@@ -56,13 +58,15 @@ func validateRules(rules []builder.RouterRule) []error {
 }
 
 func (r *Router) HandleHTTPFilt(req *message.Request) (*message.Response, error) {
-	path := req.URL.Path
+	path := cleanPath(req.URL.Path)
+	req.URL.Path = path
+	host := normalizeHost(req.Host)
 	for i := range r.rules {
 		rule := &r.rules[i]
-		if !tools.StringsContain(rule.Hosts, req.Host) {
+		if !hostMatches(rule.Hosts, host) {
 			continue
 		}
-		if !strings.HasPrefix(path, rule.PathPrefix) {
+		if !pathMatchesPrefix(path, rule.PathPrefix) {
 			continue
 		}
 		if !tools.StringsContain(rule.Methods, req.Method) {
@@ -75,4 +79,43 @@ func (r *Router) HandleHTTPFilt(req *message.Request) (*message.Response, error)
 	return &message.Response{
 		Body: fmt.Appendf([]byte{}, "no route for %s %s (host %q)", req.Method, path, req.Host),
 	}, fmt.Errorf("%w: path %q host %q", gerrors.ErrRouteNotFound, path, req.Host)
+}
+
+func cleanPath(p string) string {
+	if p == "" {
+		return "/"
+	}
+	return path.Clean(p)
+}
+
+func normalizeHost(h string) string {
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		return host
+	}
+	return h
+}
+
+func hostMatches(hosts []string, host string) bool {
+	if len(hosts) == 0 {
+		return true
+	}
+	for _, h := range hosts {
+		if strings.EqualFold(normalizeHost(h), host) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathMatchesPrefix(path, prefix string) bool {
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	if len(path) == len(prefix) {
+		return true
+	}
+	if strings.HasSuffix(prefix, "/") {
+		return true
+	}
+	return path[len(prefix)] == '/'
 }

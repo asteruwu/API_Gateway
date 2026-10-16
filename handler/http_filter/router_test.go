@@ -147,6 +147,84 @@ func TestRouterSpecificHostBeatsWildcard(t *testing.T) {
 	}
 }
 
+// TestRouterPathNormalization 路径归一化：.. / . / 重复斜杠先归一化再匹配，
+// 越权路径不落入更浅前缀，且 req.URL.Path 被改写为规范形态
+func TestRouterPathNormalization(t *testing.T) {
+	r := testRouter(t)
+
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"dotdot escapes prefix", "/orders/../admin", "svcWeb"},        // 归一化为 /admin，不命中 /orders
+		{"dotdot inside prefix", "/orders/abc/../refund", "svcRefund"}, // 归一化为 /orders/refund
+		{"duplicate slash", "/orders//abc", "svcOrder"},
+		{"dot segment", "/orders/./abc", "svcOrder"},
+	}
+
+	for _, c := range cases {
+		req := testRequest("GET", "api.shopA.com", c.path)
+		if _, err := r.HandleHTTPFilt(req); err != nil {
+			t.Errorf("%s: unexpected err: %v", c.name, err)
+			continue
+		}
+		if req.Service != c.want {
+			t.Errorf("%s: service = %q, want %q", c.name, req.Service, c.want)
+		}
+		if req.URL.Path != cleanPath(c.path) {
+			t.Errorf("%s: URL.Path = %q, want %q", c.name, req.URL.Path, cleanPath(c.path))
+		}
+	}
+}
+
+// TestRouterPrefixSegmentBoundary 前缀必须落在路径段边界：/ordersXYZ 不命中 /orders
+func TestRouterPrefixSegmentBoundary(t *testing.T) {
+	r := testRouter(t)
+
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"/orders", "svcOrder"},      // 精确相等
+		{"/orders/1", "svcOrder"},    // 段边界
+		{"/ordersXYZ", "svcWeb"},     // 非段边界，不命中
+		{"/orders-refund", "svcWeb"}, // 非段边界，不命中
+	}
+
+	for _, c := range cases {
+		req := testRequest("GET", "api.shopA.com", c.path)
+		if _, err := r.HandleHTTPFilt(req); err != nil {
+			t.Errorf("%s: unexpected err: %v", c.path, err)
+			continue
+		}
+		if req.Service != c.want {
+			t.Errorf("%s: service = %q, want %q", c.path, req.Service, c.want)
+		}
+	}
+}
+
+// TestRouterHostNormalization host 比较忽略端口与大小写
+func TestRouterHostNormalization(t *testing.T) {
+	r := testRouter(t)
+
+	for _, host := range []string{
+		"api.shopA.com",
+		"api.shopA.com:6666",
+		"API.ShopA.COM",
+		"API.SHOPA.COM:443",
+	} {
+		req := testRequest("GET", host, "/orders/1")
+		if _, err := r.HandleHTTPFilt(req); err != nil {
+			t.Errorf("%s: unexpected err: %v", host, err)
+			continue
+		}
+		if req.Service != "svcOrder" {
+			t.Errorf("%s: service = %q, want %q", host, req.Service, "svcOrder")
+		}
+	}
+}
+
 // TestNewRouterInvalidRule 规则自身不合法时 NewRouter 应直接拒绝构造
 func TestNewRouterInvalidRule(t *testing.T) {
 	cases := []struct {
