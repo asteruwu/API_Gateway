@@ -45,12 +45,12 @@ func (f *AuthFilter) HandleHTTPFilt(req *message.Request) (*message.Response, er
 	// ① 凭证提取
 	raw, err := extractCredential(req, policy.Credential)
 	if err != nil {
-		return nil, err
+		return challengeResponse(), err
 	}
 	// ② 认证
 	verified, err := f.verifier.Verify(raw)
 	if err != nil {
-		return nil, err
+		return challengeResponse(), err
 	}
 	// ③ 授权：维度检查（声明为空的维度跳过）
 	if err := checkRoles(policy.Roles, verified.Roles); err != nil {
@@ -62,6 +62,12 @@ func (f *AuthFilter) HandleHTTPFilt(req *message.Request) (*message.Response, er
 	// ④ 回写身份
 	req.Identity = &message.Identity{Subject: verified.Subject, Roles: verified.Roles}
 	return nil, nil
+}
+
+func challengeResponse() *message.Response {
+	header := http.Header{}
+	header.Set("WWW-Authenticate", gconst.AuthWWWAuthenticateBearer)
+	return &message.Response{Header: header}
 }
 
 // extractCredential 按策略声明的凭证类型从请求提取原始凭证

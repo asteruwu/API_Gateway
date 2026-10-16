@@ -240,3 +240,71 @@ func TestStripReservedHeadersCaseInsensitive(t *testing.T) {
 		t.Errorf("header = %v, want only X-Keep", h)
 	}
 }
+
+func TestAuthFilterUnauthorizedCarriesChallenge(t *testing.T) {
+	cases := map[string]struct {
+		credential string
+		token      string
+		verifier   *stubVerifier
+		wantCalled bool
+	}{
+		"missing credential":     {credential: "bearer", verifier: &stubVerifier{}},
+		"invalid credential":     {credential: "bearer", token: "bad", verifier: &stubVerifier{err: gerrors.ErrUnauthorized}, wantCalled: true},
+		"unsupported credential": {credential: "basic", token: "x", verifier: &stubVerifier{}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := testFilter(c.verifier, builder.AuthPolicy{Credential: c.credential})
+			req := bearerRequest("shopA.order#0", c.token)
+
+			resp, err := f.HandleHTTPFilt(req)
+			if !errors.Is(err, gerrors.ErrUnauthorized) {
+				t.Fatalf("err = %v, want %v", err, gerrors.ErrUnauthorized)
+			}
+			if resp == nil {
+				t.Fatal("resp = nil, want partial response carrying the challenge")
+			}
+			if got := resp.Header.Get("WWW-Authenticate"); got != "Bearer" {
+				t.Errorf("WWW-Authenticate = %q, want Bearer", got)
+			}
+			if resp.StatusCode != 0 || len(resp.Body) != 0 {
+				t.Errorf("partial response must not set status/body, got status=%d body=%q", resp.StatusCode, resp.Body)
+			}
+			if c.verifier.called != c.wantCalled {
+				t.Errorf("verifier called = %v, want %v", c.verifier.called, c.wantCalled)
+			}
+		})
+	}
+}
+
+func TestAuthFilterForbiddenCarriesNoResponse(t *testing.T) {
+	cases := map[string]*AuthFilter{
+		"role": {
+			verifier: &stubVerifier{result: &verifier.Verified{Subject: "u", Roles: []string{"user"}}},
+			policies: map[string]builder.AuthPolicy{
+				"shopA.order#0": {Credential: "bearer", Roles: []string{"admin"}},
+			},
+		},
+		"scope": {
+			verifier: &stubVerifier{result: &verifier.Verified{Subject: "u", Scopes: []string{"orders:read"}}},
+			policies: map[string]builder.AuthPolicy{
+				"shopA.order#0": {Credential: "bearer", Scopes: []string{"orders:write"}},
+			},
+		},
+		"no policy": {
+			verifier: &stubVerifier{},
+			policies: map[string]builder.AuthPolicy{},
+		},
+	}
+	for name, f := range cases {
+		t.Run(name, func(t *testing.T) {
+			resp, err := f.HandleHTTPFilt(bearerRequest("shopA.order#0", "token"))
+			if !errors.Is(err, gerrors.ErrForbidden) {
+				t.Fatalf("err = %v, want %v", err, gerrors.ErrForbidden)
+			}
+			if resp != nil {
+				t.Errorf("resp = %+v, want nil for forbidden", resp)
+			}
+		})
+	}
+}

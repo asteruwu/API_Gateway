@@ -78,7 +78,7 @@ func (h *HTTPHandler) Process(ch *ConnHandler) (resp *message.Response, err erro
 	for _, f := range h.filters {
 		resp, err := f.HandleHTTPFilt(&msgReq)
 		if err != nil {
-			return nil, err
+			return resp, err
 		}
 		if resp != nil {
 			return resp, nil
@@ -127,7 +127,7 @@ func (h *HTTPHandler) HandleHTTPConn(conn net.Conn) error {
 			if closeConnOrNot(err) {
 				return err
 			}
-			msg = ErrorResponse(err)
+			msg = ErrorResponse(err, msg)
 		}
 		if err := h.handleProcessResponse(msg, &ch); err != nil || ch.close {
 			log.Println("[handler]handler ended")
@@ -230,16 +230,16 @@ func closeConnOrNot(err error) bool {
 }
 
 // ErrorResponse 映射可写回的错误
-func ErrorResponse(err error) *message.Response {
+func ErrorResponse(err error, partial *message.Response) *message.Response {
 	status := http.StatusInternalServerError
 	switch {
 	case errors.Is(err, gerrors.ErrUnauthorized):
-		status = http.StatusUnauthorized // 401
+		status = http.StatusUnauthorized
 	case errors.Is(err, gerrors.ErrForbidden),
 		errors.Is(err, gerrors.ErrHTTPFilterReject):
-		status = http.StatusForbidden // 403
+		status = http.StatusForbidden
 	case errors.Is(err, gerrors.ErrRouteNotFound):
-		status = http.StatusNotFound // 404
+		status = http.StatusNotFound
 	case errors.Is(err, gerrors.ErrServiceNotFound),
 		errors.Is(err, gerrors.ErrNoInstance),
 		errors.Is(err, gerrors.ErrDialFailed),
@@ -247,31 +247,33 @@ func ErrorResponse(err error) *message.Response {
 		errors.Is(err, gerrors.ErrReadResponse),
 		errors.Is(err, gerrors.ErrTransform),
 		errors.Is(err, gerrors.ErrRestore):
-		status = http.StatusBadGateway // 502
+		status = http.StatusBadGateway
 	case errors.Is(err, gerrors.ErrPoolExhausted),
 		errors.Is(err, gerrors.ErrPoolClosed),
 		errors.Is(err, gerrors.ErrInstanceUnhealthy):
-		status = http.StatusServiceUnavailable // 503
+		status = http.StatusServiceUnavailable
 	}
 
-	reason := http.StatusText(status)
-	body := []byte(reason)
-	if err != nil {
-		body = []byte(err.Error())
+	if partial == nil {
+		partial = &message.Response{}
 	}
-
-	header := http.Header{
-		"Content-Type": []string{gconst.DefaultErrorContentType},
+	partial.StatusCode = status
+	if partial.Proto == "" {
+		partial.Proto = gconst.DefaultHTTPProto
 	}
-	if status == http.StatusUnauthorized {
-		header.Set("WWW-Authenticate", gconst.AuthWWWAuthenticateBearer)
+	if partial.Header == nil {
+		partial.Header = http.Header{}
 	}
-
-	return &message.Response{
-		Header:        header,
-		Body:          body,
-		StatusCode:    status,
-		Proto:         gconst.DefaultHTTPProto,
-		ContentLength: int64(len(body)),
+	if partial.Header.Get("Content-Type") == "" {
+		partial.Header.Set("Content-Type", gconst.DefaultErrorContentType)
 	}
+	if len(partial.Body) == 0 {
+		if err == nil {
+			partial.Body = []byte(http.StatusText(status))
+		} else {
+			partial.Body = []byte(err.Error())
+		}
+	}
+	partial.ContentLength = int64(len(partial.Body))
+	return partial
 }

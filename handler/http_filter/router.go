@@ -8,8 +8,8 @@ import (
 
 	"API_Gateway/builder"
 	"API_Gateway/handler/message"
-	"API_Gateway/pkg/tools"
 	gerrors "API_Gateway/pkg/errors"
+	"API_Gateway/pkg/tools"
 )
 
 type Router struct {
@@ -72,6 +72,7 @@ func (r *Router) HandleHTTPFilt(req *message.Request) (*message.Response, error)
 		req.RouteID = rule.ID
 		return nil, nil
 	}
-	return nil, fmt.Errorf("%w: path %q host %q", gerrors.ErrRouteNotFound, path, req.Host)
+	return &message.Response{
+		Body: fmt.Appendf([]byte{}, "no route for %s %s (host %q)", req.Method, path, req.Host),
+	}, fmt.Errorf("%w: path %q host %q", gerrors.ErrRouteNotFound, path, req.Host)
 }
-
