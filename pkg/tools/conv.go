@@ -1,6 +1,9 @@
 package tools
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // ToInt 从 any 提取 int
 func ToInt(v any) (int, bool) {
@@ -13,6 +16,36 @@ func ToInt(v any) (int, bool) {
 		return int(n), true
 	default:
 		return 0, false
+	}
+}
+
+// ToUnixTime 把 JSON 数字（Unix 秒）转成时间；缺失或类型不符返回 false
+func ToUnixTime(v any) (time.Time, bool) {
+	f, ok := v.(float64)
+	if !ok {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(f), 0), true
+}
+
+// ToStringsLenient 宽松归一化为字符串切片：字符串视为单元素，数组只取字符串元素，其余返回 nil
+func ToStringsLenient(v any) []string {
+	switch t := v.(type) {
+	case string:
+		if t == "" {
+			return nil
+		}
+		return []string{t}
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 

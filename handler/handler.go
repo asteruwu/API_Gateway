@@ -3,6 +3,7 @@ package handler
 import (
 	"API_Gateway/builder"
 	hf "API_Gateway/handler/http_filter"
+	"API_Gateway/handler/http_filter/auth"
 	"API_Gateway/handler/message"
 	"API_Gateway/handler/transformer"
 	gconst "API_Gateway/pkg/constant"
@@ -75,8 +76,12 @@ func (h *HTTPHandler) Process(ch *ConnHandler) (resp *message.Response, err erro
 	msgReq.RemoteAddr = ch.conn.RemoteAddr().String()
 	// 2. filter 编排
 	for _, f := range h.filters {
-		if _, err := f.HandleHTTPFilt(&msgReq); err != nil {
+		resp, err := f.HandleHTTPFilt(&msgReq)
+		if err != nil {
 			return nil, err
+		}
+		if resp != nil {
+			return resp, nil
 		}
 	}
 	if msgReq.Service == "" {
@@ -143,6 +148,13 @@ func buildFilter(cfgs []any) ([]hf.HTTPFilter, error) {
 				return nil, err
 			}
 			filters = append(filters, router)
+		case builder.AuthFilterConfig:
+			authFilter, err := auth.NewAuthFilter(filter)
+			if err != nil {
+				log.Printf("[handler]failed to initialize auth filter: %s", err.Error())
+				return nil, err
+			}
+			filters = append(filters, authFilter)
 		default:
 			log.Printf("[handler]failed to initialize http filter %d, unsupported config type %T", i, cfg)
 			return nil, gerrors.ErrInitializeHTTPFiltersFailed
@@ -223,7 +235,8 @@ func ErrorResponse(err error) *message.Response {
 	switch {
 	case errors.Is(err, gerrors.ErrUnauthorized):
 		status = http.StatusUnauthorized // 401
-	case errors.Is(err, gerrors.ErrHTTPFilterReject):
+	case errors.Is(err, gerrors.ErrForbidden),
+		errors.Is(err, gerrors.ErrHTTPFilterReject):
 		status = http.StatusForbidden // 403
 	case errors.Is(err, gerrors.ErrRouteNotFound):
 		status = http.StatusNotFound // 404
@@ -247,10 +260,15 @@ func ErrorResponse(err error) *message.Response {
 		body = []byte(err.Error())
 	}
 
+	header := http.Header{
+		"Content-Type": []string{gconst.DefaultErrorContentType},
+	}
+	if status == http.StatusUnauthorized {
+		header.Set("WWW-Authenticate", gconst.AuthWWWAuthenticateBearer)
+	}
+
 	return &message.Response{
-		Header: http.Header{
-			"Content-Type": []string{gconst.DefaultErrorContentType},
-		},
+		Header:        header,
 		Body:          body,
 		StatusCode:    status,
 		Proto:         gconst.DefaultHTTPProto,

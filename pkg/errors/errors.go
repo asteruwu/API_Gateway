@@ -82,6 +82,9 @@ var (
 	// ErrUnauthorized 请求未通过身份认证（缺少或非法凭证）
 	ErrUnauthorized = errors.New("handler: request unauthorized")
 
+	// ErrForbidden 已认证但缺少访问该资源所需的授权（角色/权限不足）
+	ErrForbidden = errors.New("handler: request forbidden")
+
 	// ErrEncodeResponse 响应编码失败
 	ErrEncodeResponse = errors.New("handler: encode response failed")
 

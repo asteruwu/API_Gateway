@@ -36,6 +36,12 @@ const DefaultErrorContentType = "text/plain; charset=utf-8"
 // AuthCredentialBearer 凭证类型：Authorization: Bearer <JWT>
 const AuthCredentialBearer = "bearer"
 
+// AuthWWWAuthenticateBearer 401 响应的 WWW-Authenticate 头值
+const AuthWWWAuthenticateBearer = "Bearer"
+
+// GatewayHeaderPrefix 网关自产头（身份透传等）的保留命名空间前缀
+const GatewayHeaderPrefix = "X-Gateway-"
+
 // AuthAlgorithmHS256 JWT 签名算法 HMAC-SHA256
 const AuthAlgorithmHS256 = "HS256"
 
