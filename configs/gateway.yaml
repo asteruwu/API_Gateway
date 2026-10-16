@@ -7,8 +7,17 @@ gateway:
       tcp_limit:
         max_conn: 100
   http_filters:
-    enabled: []
-    configs: {}
+    enabled:
+      - auth
+    configs:
+      auth:
+        credentials:
+          - bearer
+        jwt:
+          secret_env: GATEWAY_JWT_SECRET
+          issuer: https://idp.example.com
+          audience: gateway
+          leeway: 30s
   decoder:
     max_body: 4096
   encoder: {}

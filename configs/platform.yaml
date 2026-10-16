@@ -11,13 +11,25 @@ platforms:
         routes:
           - path_prefix: /orders
             methods: [POST, PUT]
+            auth:
+              credential: bearer
+              require:
+                roles: [buyer]
           - path_prefix: /orders/refund
+            auth:
+              credential: bearer
+              require:
+                roles: [support]
+                scopes: [orders:refund]
       - name: user
         transformer: testT
         instances:
           - addr: "127.0.0.1:8082"
         routes:
+          # public: true 显式声明匿名路由
           - path_prefix: /users
+            auth:
+              public: true
   - name: shopB
     host:
       - api.shopB.com
@@ -28,4 +40,7 @@ platforms:
           - addr: "127.0.0.1:8091"
         routes:
           - path_prefix: /orders
-
+            auth:
+              credential: bearer
+              require:
+                roles: [buyer]
