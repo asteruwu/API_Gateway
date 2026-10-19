@@ -32,9 +32,10 @@ type HTTPHandler struct {
 }
 
 type ConnHandler struct {
-	conn   net.Conn
-	reader *bufio.Reader
-	close  bool
+	conn    net.Conn
+	reader  *bufio.Reader
+	limiter *io.LimitedReader
+	close   bool
 }
 
 func NewHandler(cfg builder.HandlerConfig, next func(service string) (net.Conn, func(error), error)) (*HTTPHandler, error) {
@@ -63,7 +64,6 @@ func (h *HTTPHandler) Process(ch *ConnHandler) (resp *message.Response, err erro
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", gerrors.ErrReadRequest, err)
 	}
-	// TODO
 	// 0. 连接判断
 	if buf.Close {
 		ch.close = true
@@ -120,6 +120,7 @@ func (h *HTTPHandler) pickTransformer(service string) (transformer.Transformer, 
 func (h *HTTPHandler) HandleHTTPConn(conn net.Conn) error {
 	ch := buildConnHandler(conn)
 	for {
+		ch.resetReadLimit()
 		ch.conn.SetReadDeadline(time.Now().Add(gconst.DefaultHandlerReadTimeout))
 		msg, err := h.Process(&ch)
 		if err != nil {
@@ -182,11 +183,21 @@ func buildTransformer(cfg builder.TransformerConfig) (map[string]transformer.Tra
 	return byService, nil
 }
 
+func newReadLimiter(r io.Reader) *io.LimitedReader {
+	return &io.LimitedReader{R: r, N: gconst.DefaultMaxRequestReadBytes}
+}
+
+func (ch *ConnHandler) resetReadLimit() {
+	ch.limiter.N = gconst.DefaultMaxRequestReadBytes
+}
+
 func buildConnHandler(conn net.Conn) ConnHandler {
+	lr := newReadLimiter(conn)
 	return ConnHandler{
-		conn:   conn,
-		reader: bufio.NewReader(conn),
-		close:  false,
+		conn:    conn,
+		reader:  bufio.NewReader(lr),
+		limiter: lr,
+		close:   false,
 	}
 }
 
@@ -196,6 +207,7 @@ func (h *HTTPHandler) handleProcessResponse(msg *message.Response, ch *ConnHandl
 	}
 
 	res, errE := h.encoder.Encode(msg)
+	ch.conn.SetWriteDeadline(time.Now().Add(gconst.DefaultHandlerWriteTimeout))
 	_, errW := ch.conn.Write(res)
 
 	if shouldClose := closeConnOrNot(errE) || closeConnOrNot(errW); shouldClose {
@@ -268,11 +280,7 @@ func ErrorResponse(err error, partial *message.Response) *message.Response {
 		partial.Header.Set("Content-Type", gconst.DefaultErrorContentType)
 	}
 	if len(partial.Body) == 0 {
-		if err == nil {
-			partial.Body = []byte(http.StatusText(status))
-		} else {
-			partial.Body = []byte(err.Error())
-		}
+		partial.Body = []byte(http.StatusText(status))
 	}
 	partial.ContentLength = int64(len(partial.Body))
 	return partial

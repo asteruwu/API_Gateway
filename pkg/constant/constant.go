@@ -21,6 +21,12 @@ const DefaultConnectorAcceptBackoffMax = 1 * time.Second
 // DefaultReadTimeout 单次读请求的超时时间
 const DefaultHandlerReadTimeout = 30 * time.Second
 
+// DefaultHandlerWriteTimeout 写响应的超时时间
+const DefaultHandlerWriteTimeout = 10 * time.Second
+
+// DefaultMaxRequestReadBytes 单次请求从连接读入的总字节上限
+const DefaultMaxRequestReadBytes = 1 << 20 // 1MB
+
 // DefaultHandlerBodySize Decoder 默认读取大小
 const DefaultHandlerBodySize = 4096
 
