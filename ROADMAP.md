@@ -48,7 +48,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
 
 相对 v05 的关键变化（v06 连接抽象）：连接池独立成 `backend/pool/` 子包并填实——`Call` 从池借出（`net.Dial` → `pool.Get`）、`next` 升级为 `(service) (net.Conn, func(error), error)`、handler 在 `Transform` 返回后 `release(err)`（成功 `Put`、失败关连接）；第一个 transformer 真实实现改为**配置驱动的帧定界协议**（4 字节长度前缀 + `io.ReadFull`，替换 half-close），并去掉 `defer conn.Close()`；transformer 按 service 绑定（`platform.yaml` 的 `transformer:` → `Compile` 反向聚合 + 校验）；fakebackend 同步升级为帧循环，支持同一后端连接连续服务多请求。
 
-相对 v06 的关键变化（v07 安全认证）：`handler/http_filter/auth/` 落地——`Verifier` 凭证抽象 + JWT(HS256) 实现（`exp/nbf/iss/aud/leeway` + keycloak/azure/generic IdP 布局），`AuthFilter` 四段编排（提取 → 认证 → 授权 → 身份回写），`public` 匿名豁免、认证失败 401（带 `WWW-Authenticate: Bearer`）/授权失败 403、入站 `X-Gateway-*` 保留头剥离；`buildFilter` 接入 `AuthFilterConfig`，filter 短路打通；示例配置启用 `auth` 且每条 route 逐条声明。
+相对 v06 的关键变化（v07 安全认证）：`handler/http_filter/auth/` 落地——`Verifier` 凭证抽象 + JWT(HS256) 实现（`exp/nbf/iss/aud/leeway` + keycloak/azure/generic IdP 布局），`AuthFilter` 四段编排（提取 → 认证 → 授权 → 身份回写），`public` 匿名豁免、认证失败 401（带 `WWW-Authenticate: Bearer`）/授权失败 403、入站 `X-Gateway-*` 保留头剥离；`buildFilter` 接入 `AuthFilterConfig`，filter 短路打通；示例配置启用 `auth` 且每条 route 逐条声明。同时完成安全加固：Router 路径/Host 归一化与前缀段边界校验，handler 写响应超时、错误 body 去敏感（对外只回状态文案）、单请求读入量上限（1MB）。
 
 仍保留的边界：`Call` 写死 `instances[0]`，负载均衡未接（`LoadBalancer` 接口待用）；transformer 帧协议为长度前缀的**模拟协议**（非真实 gRPC/MCP）；v07 认证仅 HS256 + 单一静态密钥（多凭证机制/注册表、多 IdP、JWKS、RS256、有状态 verifier 均未做，见「明确不在 v07」）。连接池等待/唤醒的重做已在本版落地（见 v06 进度末条），不再是待办。
 
@@ -66,13 +66,13 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
 | v05 | 路由能力 | router 真实实现，支持配置文件定义多条路由规则 |
 | v06 | 连接抽象 | ConnPool 落地 + 第一个 transformer 真实实现（比如先做 gRPC） |
 | v07 | 安全认证 | 鉴权 filter 真实逻辑（JWT 校验） |
-| v08 | 管道细化 | filter chain 可配置化（不同路由挂不同 filter 组合）+ HTTP 层精细限流 |
+| v08 | 管道细化 | filter chain 可配置化（不同路由挂不同 filter 组合）+ HTTP 层精细限流 + 负载均衡 |
 | v09 | 协议扩展 | 第二个 transformer 实现（验证新增协议不改已有代码） |
 | v10 | 最终完善 | 错误处理统一、响应路径补全走查、代码整理，可运行版本 |
 
 ## 当前进度
 
-> 最后更新：2026-10-16　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
+> 最后更新：2026-10-19　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
 
 - [x] **v00 项目初始化** —— 完成，数据流已闭合
   - [x] `main.go`：按逆序完成编排（backend → handler → connector）
@@ -129,6 +129,8 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
   - [x] 阶段 D（装配）：`buildFilter` 新增 `case AuthFilterConfig` 构造 `AuthFilter`
   - [x] 阶段 E（测试）：`auth_test.go` / `jwt_test.go` 单测 + `testbed/auth_test.go` 端到端（200/401/403/public，拒绝不触达后端）
   - [x] 阶段 F（配置与文档）：`gateway.yaml` 启用 `auth` 并配 `credentials`/`jwt`，`platform.yaml` 逐条声明（含 `public: true` 示例），新增 `builder/config_test.go` 校验示例配置
+  - [x] 安全加固 G1–G3（路由）：`path.Clean` 归一化、前缀段边界、Host 剥离端口 + 大小写不敏感
+  - [x] 安全加固 G4–G6（handler）：写响应设 write deadline（10s）；错误 body 改回 `http.StatusText`、内部细节只进日志；conn 包 `io.LimitedReader`（1MB）限制单请求读入量
 - [ ] v08 管道细化
 - [ ] v09 协议扩展
 - [ ] v10 最终完善
@@ -157,8 +159,8 @@ clientConn → Decode → message.Request → filters
 > 仅保留未完成项，按落地阶段归类；每项随对应版本完成后删除。
 
 ### v08 管道细化
-- 负载均衡：`BManager.Call` 写死 `instances[0]`
-- 插件注册表：`pluginHydrators` 被 tcp/http filter、transformer 三类共用一个命名空间，错位引用（如把 `tcp_limit` 写进 `http_filters`）到 `buildFilter` 运行时才报错
+- 负载均衡：`BManager.Call` 写死 `instances[0]`（由「下一步」阶段 E 处理）
+- 插件注册表：`pluginHydrators` 被 tcp/http filter、transformer 三类共用一个命名空间，错位引用（如把 `tcp_limit` 写进 `http_filters`）到 `buildFilter` 运行时才报错（由阶段 A 处理）
 
 ### v09 协议扩展
 - transformer 在后端连接上的读写未设 deadline，后端挂死时只能靠 reaper 借出超时强杀（默认 10–15s）
@@ -183,11 +185,82 @@ clientConn → Decode → message.Request → filters
 - 假后端协议和 transformer 绑定演进：现为 **4 字节长度前缀帧**（模拟协议，fakebackend 与 transformer 对称实现）；后续接真实协议（gRPC/MCP）时替换实现。
 - 行为模式先做 `echo` + `fixed`，`error`/`delay` 等做到重试/熔断（v03/v06）时再加。
 
-## v07 安全加固（当前待办）
+## 下一步（v08 管道细化 · 规划）
 
-- G1 **Router 路径归一化**：命中前对 `URL.Path` 做 `path.Clean`，修掉 `/orders/../admin` 命中 `/orders` 的绕过（按路由差异化鉴权时构成越权）。
-- G2 **Router 前缀段边界**：前缀匹配须落在路径段边界，避免 `/ordersXYZ` 命中 `/orders`。
-- G3 **Router Host 归一化**：比较前剥离端口、统一大小写；补 testbed 覆盖（现有一律 `Host: gateway`，未覆盖带端口/大小写）。
-- G4 **客户端写超时**：`handleProcessResponse` 的 `conn.Write` 设 write deadline，避免慢读客户端长期占住 goroutine。
-- G5 **错误响应去敏感**：错误 body 不再直接回 `err.Error()`，改为对外文案 + 内部日志（现会泄露后端地址、拨号原因等内部细节）。
-- G6 **请求头大小上限**：为 `http.ReadRequest` 的头部总长设限，避免超大请求头耗尽内存。
+> 两条主线：**filter chain 可配置化**（不同路由执行不同 filter 组合）与 **HTTP 层精细限流**；同时收掉挂在 v08 的两项已知待办（负载均衡、插件注册表命名空间）。
+
+### 目标
+
+1. 请求命中路由后，按该路由声明的 filter 序列执行，不再是全局固定链。
+2. 新增请求级限流 filter（按路由配额），与 v03 的连接级限流分层。
+3. `BManager.Call` 接入负载均衡，不再写死 `instances[0]`。
+4. 插件注册表按类别隔离，错位引用在配置加载期即报错。
+
+### 设计契约（实现须遵守）
+
+1. **Router 固定先行**：Router 不参与 route 声明；`Process` 先执行 Router 拿到 `RouteID`，再按 `RouteID` 取 pipeline。
+2. **未声明即继承**：route 不写 `filters` → 沿用全局 `http_filters.enabled` 顺序（保持 v07 行为）；写了 → 精确替换，只跑列出的。
+3. **策略表按 RouteID 聚合**：与 auth 一致，限流策略也由 `Compile` 反向聚合进 filter 配置；filter 单实例按 `req.RouteID` 查表。
+4. **fail-closed 校验**：auth 启用时，任何 route 的 pipeline 必须包含 `auth`；pipeline 引用的 filter 必须已启用；Router 名不可写入。
+5. **短路语义不变**：任何 filter 返回非 nil response 或 error，链路立即终止，后续 filter、借连接、transformer 都不执行。
+6. **filter 实例全局共享**：限流/鉴权状态须并发安全（一条 conn 一个 goroutine）。
+7. **两级映射不变**：filter 定「请求→服务」，backend 定「服务→实例」；v08 不做换实例重试。
+
+### 阶段 A —— 插件注册表分类（builder）
+
+- A1 `pluginHydrators` 拆成 `tcpFilterHydrators` / `httpFilterHydrators` / `transformerHydrators` 三张表。
+- A2 `hydratePluginSet` 接收对应的表，错误信息带类别；`tcp_limit` 写进 `http_filters` 在 hydrate 期即报错。
+- A3 单测：跨类别错位引用报错，各表正常水合。
+- 主要文件：`builder/hydrate.go`、`builder/hydrate_test.go`。
+
+### 阶段 B —— 路由级 pipeline 配置与编译（builder）
+
+- B1 编写态：`RouteRuleConfig` 增 `Filters []string`（YAML `filters`）。
+- B2 运行态：`HTTPFilterConfig` 调整为 `{Router RouterConfig; Filters []any; Pipelines map[string][]string}`——Router 从 `Filters` 中移出，不再前置拼接；`Pipelines` 为 RouteID → filter 名序列（全量，每条 route 一条）。
+- B3 `compileRoutes` 展开路由时同时产出 pipeline：未声明则按 enabled 顺序填默认链，声明则保留原序。
+- B4 校验：引用未启用的 filter、写入 Router、auth 启用时 pipeline 缺 `auth`，均编译期报错。
+- B5 单测：默认继承、显式覆盖、非法引用、缺 auth、全量表。
+- 主要文件：`builder/{platform,config,compile,validate}.go`、`builder/compile_test.go`。
+
+### 阶段 C —— 按 RouteID 执行 pipeline（handler）
+
+- C1 `buildFilter` 改为返回「Router 实例 + 名字→实例表」，`NewHandler` 把 `Pipelines` 预解析为 `map[RouteID][]HTTPFilter`，避免请求期查名字。
+- C2 `Process`：Router 先跑 → 按 `req.RouteID` 取 pipeline → 依次执行，短路/错误语义沿用 v07。
+- C3 pipeline 缺失视为配置错误（fail-closed），不静默放行。
+- C4 既有行为等价：全部 route 都不声明 `filters` 时，执行顺序与 v07 完全一致。
+- 主要文件：`handler/handler.go`。
+
+### 阶段 D —— HTTP 限流 filter
+
+- D1 配置：route 级 `rate_limit: {qps, burst}`；编写态/运行态分层同 auth。
+- D2 运行态 `RateLimitFilterConfig{Policies map[RouteID]RateLimitPolicy}`，`Compile` 反向聚合；filter 启用但 route 未声明 = 不限流。
+- D3 算法：按 RouteID 的令牌桶（按时间惰性补充），桶状态并发安全；校验 `qps > 0`、`burst >= 1`。
+- D4 拒绝：`ErrRateLimited` → 429 + `Retry-After`，走短路写回；`ErrorResponse` 增映射。route 声明了 `rate_limit` 但 filter 未启用 → 编译期报错。
+- D5 单测：连续请求触发限流、令牌恢复、并发安全、无策略放行。
+- 主要文件：`handler/http_filter/ratelimit/*`、`builder/{platform,config,compile,validate,hydrate}.go`、`pkg/errors/errors.go`。
+
+### 阶段 E —— 负载均衡（backend）
+
+- E1 service 级配置 `lb`（默认 `round_robin`），随 `ServiceRef` 传入运行态；编译期校验未知算法。
+- E2 实现 `LoadBalancer`：`round_robin`（原子计数）+ 候选过滤 unhealthy（全 unhealthy 时回退全量）。
+- E3 `Call` 改为 `lb.Pick(instances)` 取实例后再取该实例的池；release 语义不变。
+- E4 单测：多实例轮询均衡、单实例、空实例、并发计数正确。
+- 主要文件：`backend/{loadbalancer,backend,model}.go`、`builder/{platform,config,compile,validate}.go`、`backend/*_test.go`。
+
+### 阶段 F —— 测试与文档
+
+- F1 testbed：两条路由不同 pipeline（一条 auth + 限流、一条 public）；限流 429 且后端未被触达。
+- F2 testbed：多实例 `round_robin` 分发（两个 fakebackend）。
+- F3 配置样例更新：`gateway.yaml` 启用 `rate_limit`，`platform.yaml` 逐条给出 `filters` / `rate_limit` / `lb` 示例。
+- F4 ROADMAP 勾选，删除「已知待办」v08 两条。
+
+### 明确不在 v08
+
+- 换实例重试、熔断、主动健康探测（留 v09/v10）。
+- per-identity / per-IP / 分布式限流（v08 只做单机 route 级）。
+- pipeline 热加载、按 method/host 再细分 filter 组合。
+- 多凭证 / 多 IdP / JWKS / RS256（未定版本）。
+
+### 顺序
+
+`A → B → C → D → E → F`。A 独立且最小；B 定契约、C 消费契约、D 依赖 C 的 pipeline；E 与 C/D 无耦合可并行；F 收口。
