@@ -20,6 +20,7 @@ type ServiceConfig struct {
 type RouteRuleConfig struct {
 	PathPrefix string           `yaml:"path_prefix"`
 	Methods    []string         `yaml:"methods"`
+	Filters    []string         `yaml:"filters"`
 	Auth       *RouteAuthConfig `yaml:"auth"`
 }
 

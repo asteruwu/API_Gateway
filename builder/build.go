@@ -5,7 +5,8 @@ func Build(configDir string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := Hydrate(&gateway); err != nil {
+	httpFilters := Calculate(gateway, platforms)
+	if err := Hydrate(&gateway, httpFilters); err != nil {
 		return nil, err
 	}
 	return Compile(gateway, platforms)

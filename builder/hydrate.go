@@ -14,24 +14,21 @@ const (
 
 type pluginHydrator func(raw any) (any, error)
 
-func Hydrate(gw *GatewayConfig) error {
-	if err := hydratePluginSet(&gw.TCPFilters, categoryTCPFilter, tcpFilterHydrators); err != nil {
+func Hydrate(gw *GatewayConfig, httpFilters []string) error {
+	if err := hydratePluginSet(&gw.TCPFilters, gw.TCPFilters.Enabled, categoryTCPFilter, tcpFilterHydrators); err != nil {
 		return err
 	}
-	if err := hydratePluginSet(&gw.HTTPFilters, categoryHTTPFilter, httpFilterHydrators); err != nil {
+	if err := hydratePluginSet(&gw.HTTPFilters, httpFilters, categoryHTTPFilter, httpFilterHydrators); err != nil {
 		return err
 	}
-	return hydratePluginSet(&gw.Transformer, categoryTransformer, transformerHydrators)
+	return hydratePluginSet(&gw.Transformer, gw.Transformer.Enabled, categoryTransformer, transformerHydrators)
 }
 
-func hydratePluginSet(set *PluginSet, category string, hydrators map[string]pluginHydrator) error {
-	if set.Configs == nil {
-		return nil
-	}
-	for _, name := range set.Enabled {
+func hydratePluginSet(set *PluginSet, names []string, category string, hydrators map[string]pluginHydrator) error {
+	for _, name := range names {
 		raw, ok := set.Configs[name]
 		if !ok {
-			return fmt.Errorf("%w: %s plugin %q enabled but has no config entry", gerrors.ErrFilterConfigNotFound, category, name)
+			return fmt.Errorf("%w: %s plugin %q referenced but has no config entry", gerrors.ErrFilterConfigNotFound, category, name)
 		}
 		hydrate, ok := hydrators[name]
 		if !ok {

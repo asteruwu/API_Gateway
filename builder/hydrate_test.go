@@ -24,7 +24,7 @@ func TestHydrateAuthValid(t *testing.T) {
 		},
 	}
 
-	if err := Hydrate(&gw); err != nil {
+	if err := Hydrate(&gw, gw.HTTPFilters.Enabled); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	cfg, ok := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig)
@@ -55,7 +55,7 @@ func TestHydrateAuthTypeMismatch(t *testing.T) {
 					Configs: map[string]any{"auth": auth},
 				},
 			}
-			err := Hydrate(&gw)
+			err := Hydrate(&gw, gw.HTTPFilters.Enabled)
 			if !errors.Is(err, gerrors.ErrInvalidConfig) {
 				t.Errorf("err = %v, want wrapping %v", err, gerrors.ErrInvalidConfig)
 			}
@@ -71,7 +71,7 @@ func TestHydrateEnabledWithoutConfig(t *testing.T) {
 			Configs: map[string]any{},
 		},
 	}
-	err := Hydrate(&gw)
+	err := Hydrate(&gw, gw.HTTPFilters.Enabled)
 	if !errors.Is(err, gerrors.ErrFilterConfigNotFound) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrFilterConfigNotFound)
 	}
@@ -86,7 +86,7 @@ func TestHydrateTCPLimitValid(t *testing.T) {
 		},
 	}
 
-	if err := Hydrate(&gw); err != nil {
+	if err := Hydrate(&gw, gw.HTTPFilters.Enabled); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	cfg, ok := gw.TCPFilters.Configs["tcp_limit"].(TCPLimiterFilterConfig)
@@ -107,7 +107,7 @@ func TestHydrateTestTransformerValid(t *testing.T) {
 		},
 	}
 
-	if err := Hydrate(&gw); err != nil {
+	if err := Hydrate(&gw, gw.HTTPFilters.Enabled); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if _, ok := gw.Transformer.Configs["testT"].(TestTransformerConfig); !ok {
@@ -135,7 +135,7 @@ func TestHydrateCrossCategory(t *testing.T) {
 			set.Enabled = []string{c.plugin}
 			set.Configs = map[string]any{c.plugin: map[string]any{}}
 
-			err := Hydrate(&gw)
+			err := Hydrate(&gw, gw.HTTPFilters.Enabled)
 			if !errors.Is(err, gerrors.ErrInvalidConfig) {
 				t.Fatalf("err = %v, want wrapping %v", err, gerrors.ErrInvalidConfig)
 			}
@@ -143,5 +143,50 @@ func TestHydrateCrossCategory(t *testing.T) {
 				t.Errorf("err = %v, want mention category %q", err, c.category)
 			}
 		})
+	}
+}
+
+// TestHydrateHTTPFollowsNames http filter 只认传入名单：不在 enabled 但被 route 引用的也要水合
+func TestHydrateHTTPFollowsNames(t *testing.T) {
+	gw := GatewayConfig{
+		HTTPFilters: PluginSet{
+			Configs: map[string]any{
+				"auth": map[string]any{"credentials": []any{"bearer"}},
+			},
+		},
+	}
+
+	if err := Hydrate(&gw, []string{"auth"}); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if _, ok := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig); !ok {
+		t.Errorf("config = %T, want AuthFilterConfig", gw.HTTPFilters.Configs["auth"])
+	}
+}
+
+// TestHydrateHTTPIgnoresUnreferenced 名单外的 Configs 条目不水合
+func TestHydrateHTTPIgnoresUnreferenced(t *testing.T) {
+	raw := map[string]any{"credentials": "not a list"}
+	gw := GatewayConfig{
+		HTTPFilters: PluginSet{
+			Configs: map[string]any{"auth": raw},
+		},
+	}
+
+	if err := Hydrate(&gw, nil); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if _, ok := gw.HTTPFilters.Configs["auth"].(map[string]any); !ok {
+		t.Errorf("config = %T, want untouched raw map", gw.HTTPFilters.Configs["auth"])
+	}
+}
+
+// TestHydrateReferencedWithNilConfigs 引用了 filter 却整段没写 configs，不能静默通过
+func TestHydrateReferencedWithNilConfigs(t *testing.T) {
+	gw := GatewayConfig{}
+
+	err := Hydrate(&gw, []string{"auth"})
+	if !errors.Is(err, gerrors.ErrFilterConfigNotFound) {
+		t.Errorf("err = %v, want %v", err, gerrors.ErrFilterConfigNotFound)
 	}
 }

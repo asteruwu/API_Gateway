@@ -199,14 +199,14 @@ clientConn → Decode → message.Request → filters
 ### 设计契约（实现须遵守）
 
 1. **Router 固定先行**：Router 不参与 route 声明；`Process` 先执行 Router 拿到 `RouteID`，再按 `RouteID` 取 pipeline。
-2. **未声明即继承**：route 不写 `filters` → 沿用全局 `http_filters.enabled` 顺序（保持 v07 行为）；写了 → 精确替换，只跑列出的。
+2. **`enabled` 只定义默认链**：route 不写 `filters`（nil）→ 按 `http_filters.enabled` 顺序执行（保持 v07 行为）；写了（含显式 `[]`）→ 以 route 声明为绝对标准，只跑列出的，不要求出现在 `enabled` 中。需要实例化的 http filter = `enabled` ∪ 各 route 声明。
 3. **策略表按 RouteID 聚合**：与 auth 一致，限流策略也由 `Compile` 反向聚合进 filter 配置；filter 单实例按 `req.RouteID` 查表。
-4. **fail-closed 校验**：auth 启用时，任何 route 的 pipeline 必须包含 `auth`；pipeline 引用的 filter 必须已启用；Router 名不可写入。
+4. **fail-closed 校验**：route 引用的 filter 必须在 `configs` 中有配置（hydrate 期报错，Router 名写入同样在此被拦）；route `filters` 不可重复；auth 的 fail-closed 规则见 B5。
 5. **短路语义不变**：任何 filter 返回非 nil response 或 error，链路立即终止，后续 filter、借连接、transformer 都不执行。
 6. **filter 实例全局共享**：限流/鉴权状态须并发安全（一条 conn 一个 goroutine）。
 7. **两级映射不变**：filter 定「请求→服务」，backend 定「服务→实例」；v08 不做换实例重试。
 
-### 阶段 A —— 插件注册表分类（builder）
+### 阶段 A —— 插件注册表分类（builder）【done】
 
 - A1 `pluginHydrators` 拆成 `tcpFilterHydrators` / `httpFilterHydrators` / `transformerHydrators` 三张表。
 - A2 `hydratePluginSet` 接收对应的表，错误信息带类别；`tcp_limit` 写进 `http_filters` 在 hydrate 期即报错。
@@ -215,16 +215,28 @@ clientConn → Decode → message.Request → filters
 
 ### 阶段 B —— 路由级 pipeline 配置与编译（builder）
 
-- B1 编写态：`RouteRuleConfig` 增 `Filters []string`（YAML `filters`）。
-- B2 运行态：`HTTPFilterConfig` 调整为 `{Router RouterConfig; Filters []any; Pipelines map[string][]string}`——Router 从 `Filters` 中移出，不再前置拼接；`Pipelines` 为 RouteID → filter 名序列（全量，每条 route 一条）。
-- B3 `compileRoutes` 展开路由时同时产出 pipeline：未声明则按 enabled 顺序填默认链，声明则保留原序。
-- B4 校验：引用未启用的 filter、写入 Router、auth 启用时 pipeline 缺 `auth`，均编译期报错。
-- B5 单测：默认继承、显式覆盖、非法引用、缺 auth、全量表。
-- 主要文件：`builder/{platform,config,compile,validate}.go`、`builder/compile_test.go`。
+构建链路调整为 `Load → Calculate → Hydrate → Compile`：Calculate 算出需要实例化的 http filter 名单交给 Hydrate，Hydrate 不感知路由。
+
+过渡节奏：B 只新增运行态字段，旧 `HTTPFilterConfig.Filters`（Router 前置拼接、仅含 `enabled`）原样保留继续驱动 handler，C 切换后删除。因此 B 合入到 C 完成之间，route 声明但不在 `enabled` 中的 filter 不会实际执行。
+
+- B1 编写态：`RouteRuleConfig` 增 `Filters []string`（YAML `filters`）；nil = 继承默认链，`[]` = 显式空链。
+- B2 Calculate + Hydrate 接名单：
+  - 新增 Calculate 步骤，产出 `enabled` ∪ 各 route 声明的 http filter 名单（`[]string`，先 `enabled` 顺序、再按 route 出现顺序，去重；顺序只为报错稳定）；`Build` 在 Load 后调用并传给 `Hydrate`。
+  - `hydratePluginSet` 改为接收名单：tcp/transformer 仍传各自 `Enabled`，http 传 Calculate 结果。
+  - 只改 http 路径：名单非空而 `Configs` 为 nil 时不再静默通过；报错文案由 `enabled but has no config entry` 改为 `referenced but has no config entry`。
+  - `Compile` 内部复用同一纯函数取并集，签名不变。
+- B3 运行态结构：`HTTPFilterConfig` 新增 `Router RouterConfig`、具名表 `map[string]any`（并集，名字 → 配置）、`Pipelines map[string][]string`（RouteID → filter 名序列，全量，每条 route 一条）；旧 `Filters` 保留。
+- B4 编译：`compileRoutes` 展开路由时同时产出 pipeline（nil 按 `enabled` 顺序填默认链，声明则保留原序）；按并集从 `Configs` 建具名表；`attachAuthPolicies` 过渡期同时作用于旧列表与具名表。
+- B5 校验：
+  - route `filters` 重复项编译期报错。
+  - `validateRouteAuth` 重写：由「看全局 `enabled` 是否含 auth」改为「看每条 route 的 pipeline」；规则二选一（待定）——甲：auth 出现在并集中则每条 pipeline 必须含 `auth` 且每条 route 必须声明 `auth` 块；乙：逐条一致性，pipeline 含 auth ⇔ 声明 `auth` 块，两者皆无放行。
+  - 不单独校验 Router 名（已由 hydrate 拦截）。
+- B6 单测收口：默认继承、显式覆盖、显式空链、并集、未配置引用、重复、auth fail-closed。
+- 主要文件：`builder/{platform,config,build,hydrate,compile,validate}.go`、`builder/{hydrate,compile}_test.go`。
 
 ### 阶段 C —— 按 RouteID 执行 pipeline（handler）
 
-- C1 `buildFilter` 改为返回「Router 实例 + 名字→实例表」，`NewHandler` 把 `Pipelines` 预解析为 `map[RouteID][]HTTPFilter`，避免请求期查名字。
+- C1 `buildFilter` 改为从 B3 的具名表（并集）构造「Router 实例 + 名字→实例表」，`NewHandler` 把 `Pipelines` 预解析为 `map[RouteID][]HTTPFilter`，避免请求期查名字；切换完成后删除旧 `Filters`，具名表字段是否改名届时再定。
 - C2 `Process`：Router 先跑 → 按 `req.RouteID` 取 pipeline → 依次执行，短路/错误语义沿用 v07。
 - C3 pipeline 缺失视为配置错误（fail-closed），不静默放行。
 - C4 既有行为等价：全部 route 都不声明 `filters` 时，执行顺序与 v07 完全一致。
@@ -233,9 +245,9 @@ clientConn → Decode → message.Request → filters
 ### 阶段 D —— HTTP 限流 filter
 
 - D1 配置：route 级 `rate_limit: {qps, burst}`；编写态/运行态分层同 auth。
-- D2 运行态 `RateLimitFilterConfig{Policies map[RouteID]RateLimitPolicy}`，`Compile` 反向聚合；filter 启用但 route 未声明 = 不限流。
+- D2 运行态 `RateLimitFilterConfig{Policies map[RouteID]RateLimitPolicy}`，`Compile` 反向聚合；route 的 pipeline 含 `rate_limit` 但未声明策略 = 不限流。
 - D3 算法：按 RouteID 的令牌桶（按时间惰性补充），桶状态并发安全；校验 `qps > 0`、`burst >= 1`。
-- D4 拒绝：`ErrRateLimited` → 429 + `Retry-After`，走短路写回；`ErrorResponse` 增映射。route 声明了 `rate_limit` 但 filter 未启用 → 编译期报错。
+- D4 拒绝：`ErrRateLimited` → 429 + `Retry-After`，走短路写回；`ErrorResponse` 增映射。route 声明了 `rate_limit` 策略但其 pipeline 不含 `rate_limit` → 编译期报错。
 - D5 单测：连续请求触发限流、令牌恢复、并发安全、无策略放行。
 - 主要文件：`handler/http_filter/ratelimit/*`、`builder/{platform,config,compile,validate,hydrate}.go`、`pkg/errors/errors.go`。
 
