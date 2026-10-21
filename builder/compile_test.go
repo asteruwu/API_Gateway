@@ -625,3 +625,149 @@ func TestCompileAuthPoliciesFullTable(t *testing.T) {
 		t.Errorf("scopes policy = %+v, want scopes [read]", scopes)
 	}
 }
+
+// TestCompilePipelineInheritsDefault route 不写 filters，pipeline 继承 enabled 顺序
+func TestCompilePipelineInheritsDefault(t *testing.T) {
+	gw := authGateway()
+	platforms := authPlatforms()
+
+	cfg, err := Compile(gw, platforms)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	for id, pl := range cfg.Handler.Filter.Pipelines {
+		if len(pl) != 1 || pl[0] != "auth" {
+			t.Errorf("pipeline[%s] = %v, want [auth]", id, pl)
+		}
+	}
+}
+
+// TestCompilePipelineExplicitOverride route 声明 filters 后以声明为准
+func TestCompilePipelineExplicitOverride(t *testing.T) {
+	gw := GatewayConfig{
+		HTTPFilters: PluginSet{
+			Enabled: []string{"testF"},
+			Configs: map[string]any{
+				"testF":  struct{}{},
+				"testF2": struct{}{},
+			},
+		},
+		Transformer: PluginSet{
+			Enabled: []string{"testT"},
+			Configs: map[string]any{"testT": TestTransformerConfig{}},
+		},
+	}
+	platforms := []PlatformConfig{{
+		Name: "p",
+		Service: []ServiceConfig{{
+			Name:        "s",
+			Transformer: "testT",
+			Instances:   []InstanceConfig{{Addr: "127.0.0.1:8081"}},
+			Routes: []RouteRuleConfig{
+				{PathPrefix: "/default"}, // nil → 继承
+				{PathPrefix: "/custom", Filters: []string{"testF2", "testF"}}, // 显式覆盖
+				{PathPrefix: "/empty", Filters: []string{}},                   // 显式空链
+			},
+		}},
+	}}
+
+	cfg, err := Compile(gw, platforms)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	pl := cfg.Handler.Filter.Pipelines
+
+	if got := pl["p.s#0"]; len(got) != 1 || got[0] != "testF" {
+		t.Errorf("default pipeline = %v, want [testF]", got)
+	}
+	if got := pl["p.s#1"]; len(got) != 2 || got[0] != "testF2" || got[1] != "testF" {
+		t.Errorf("custom pipeline = %v, want [testF2 testF]", got)
+	}
+	if got := pl["p.s#2"]; len(got) != 0 {
+		t.Errorf("empty pipeline = %v, want []", got)
+	}
+}
+
+// TestCompileConfigsContainsUnion Configs 包含 enabled ∪ route 声明的 filter
+func TestCompileConfigsContainsUnion(t *testing.T) {
+	gw := GatewayConfig{
+		HTTPFilters: PluginSet{
+			Enabled: []string{"testF"},
+			Configs: map[string]any{
+				"testF":  struct{ N string }{N: "enabled"},
+				"testF2": struct{ N string }{N: "route-only"},
+			},
+		},
+		Transformer: PluginSet{
+			Enabled: []string{"testT"},
+			Configs: map[string]any{"testT": TestTransformerConfig{}},
+		},
+	}
+	platforms := []PlatformConfig{{
+		Name: "p",
+		Service: []ServiceConfig{{
+			Name:        "s",
+			Transformer: "testT",
+			Instances:   []InstanceConfig{{Addr: "127.0.0.1:8081"}},
+			Routes:      []RouteRuleConfig{{PathPrefix: "/a", Filters: []string{"testF2"}}},
+		}},
+	}}
+
+	cfg, err := Compile(gw, platforms)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	configs := cfg.Handler.Filter.Configs
+	if len(configs) != 2 {
+		t.Fatalf("configs = %v, want 2 entries (union)", configs)
+	}
+	if _, ok := configs["testF"]; !ok {
+		t.Errorf("configs missing enabled filter %q", "testF")
+	}
+	if _, ok := configs["testF2"]; !ok {
+		t.Errorf("configs missing route-only filter %q", "testF2")
+	}
+}
+
+// TestCompileRouterFieldPopulated HTTPFilterConfig.Router 应和 Filters[0] 里的一致
+func TestCompileRouterFieldPopulated(t *testing.T) {
+	gw := GatewayConfig{
+		Transformer: PluginSet{
+			Enabled: []string{"testT"},
+			Configs: map[string]any{"testT": TestTransformerConfig{}},
+		},
+	}
+	platforms := []PlatformConfig{{
+		Name: "p",
+		Service: []ServiceConfig{{
+			Name:        "s",
+			Transformer: "testT",
+			Instances:   []InstanceConfig{{Addr: "127.0.0.1:8081"}},
+			Routes:      []RouteRuleConfig{{PathPrefix: "/a"}},
+		}},
+	}}
+
+	cfg, err := Compile(gw, platforms)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(cfg.Handler.Filter.Router.Rules) != 1 {
+		t.Errorf("Router.Rules = %+v, want 1 rule", cfg.Handler.Filter.Router.Rules)
+	}
+}
+
+// TestCompileAuthPoliciesInConfigs auth 策略必须同时写入 Configs 里的 AuthFilterConfig
+func TestCompileAuthPoliciesInConfigs(t *testing.T) {
+	cfg, err := Compile(authGateway(), authPlatforms())
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	ac, ok := cfg.Handler.Filter.Configs["auth"].(AuthFilterConfig)
+	if !ok {
+		t.Fatalf("configs[auth] = %T, want AuthFilterConfig", cfg.Handler.Filter.Configs["auth"])
+	}
+	if len(ac.Policies) != 2 {
+		t.Errorf("policies = %+v, want 2 entries", ac.Policies)
+	}
+}

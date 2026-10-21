@@ -14,7 +14,7 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 		return nil, fmt.Errorf("%w: %w", gerrors.ErrInvalidConfig, errors.Join(errs...))
 	}
 
-	rules, policies := compileRoutes(platforms)
+	rules, policies, pipelines := compileRoutes(platforms, gw.HTTPFilters.Enabled)
 	errs = append(errs, validateRouteConflicts(rules)...)
 
 	service := flattenServices(platforms)
@@ -25,7 +25,10 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 	tcpFilters, tcpErrs := assembleEnabledList(gw.TCPFilters)
 	errs = append(errs, tcpErrs...)
 
-	httpFilters, httpErrs := assembleEnabledList(gw.HTTPFilters)
+	httpFilters, httpErrs := assembleEnabledMap(PluginSet{
+		Enabled: Calculate(gw, platforms),
+		Configs: gw.HTTPFilters.Configs,
+	})
 	errs = append(errs, httpErrs...)
 
 	transformers, transformerErrs := assembleEnabledMap(gw.Transformer)
@@ -40,8 +43,8 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 		return nil, fmt.Errorf("%w: %w", gerrors.ErrInvalidConfig, errors.Join(errs...))
 	}
 
-	httpFilters = attachAuthPolicies(httpFilters, policies)
-	httpFilters = append([]any{RouterConfig{Rules: rules}}, httpFilters...)
+	attachAuthPolicies(httpFilters, policies)
+	router := RouterConfig{Rules: rules}
 
 	return &Config{
 		Connector: ConnectorConfig{
@@ -51,7 +54,12 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 		Handler: HandlerConfig{
 			Decoder: gw.Decoder,
 			Encoder: gw.Encoder,
-			Filter:  HTTPFilterConfig{Filters: httpFilters},
+			Filter: HTTPFilterConfig{
+				Filters:   legacyFilterList(router, gw.HTTPFilters.Enabled, httpFilters),
+				Router:    router,
+				Configs:   httpFilters,
+				Pipelines: pipelines,
+			},
 			Transformer: TransformerConfig{
 				Transformers: buildTransformerEntries(transformers, byTransformer),
 			},
@@ -88,10 +96,11 @@ func flattenServices(platforms []PlatformConfig) []ServiceRef {
 	return refs
 }
 
-// compileRoutes 一次遍历平台配置，同时展平路由规则并聚合鉴权策略。
-func compileRoutes(platforms []PlatformConfig) ([]RouterRule, map[string]AuthPolicy) {
+// compileRoutes 一次遍历平台配置，同时展平路由规则、聚合鉴权策略、产出各 route 的 pipeline
+func compileRoutes(platforms []PlatformConfig, defaultChain []string) ([]RouterRule, map[string]AuthPolicy, map[string][]string) {
 	rules := make([]RouterRule, 0)
 	policies := make(map[string]AuthPolicy)
+	pipelines := make(map[string][]string)
 	for _, p := range platforms {
 		for _, s := range p.Service {
 			service := qualifiedServiceName(p.Name, s.Name)
@@ -99,10 +108,19 @@ func compileRoutes(platforms []PlatformConfig) ([]RouterRule, map[string]AuthPol
 				rule := flattenRoute(service, p.Host, r, i)
 				rules = append(rules, rule)
 				policies[rule.ID] = flattenAuthPolicy(r.Auth)
+				pipelines[rule.ID] = routePipeline(r.Filters, defaultChain)
 			}
 		}
 	}
-	return rules, policies
+	return rules, policies, pipelines
+}
+
+func routePipeline(declared, defaultChain []string) []string {
+	src := declared
+	if declared == nil {
+		src = defaultChain
+	}
+	return append(make([]string, 0, len(src)), src...)
 }
 
 // flattenRoute 把单条 route 声明展平为 RouterRule，并按 service+下标生成稳定 ID
@@ -134,16 +152,25 @@ func routeID(service string, idx int) string {
 }
 
 // attachAuthPolicies 把反向聚合出的策略表装进 auth filter 配置
-func attachAuthPolicies(filters []any, policies map[string]AuthPolicy) []any {
-	for i, f := range filters {
-		cfg, ok := f.(AuthFilterConfig)
+func attachAuthPolicies(configs map[string]any, policies map[string]AuthPolicy) {
+	for name, c := range configs {
+		cfg, ok := c.(AuthFilterConfig)
 		if !ok {
 			continue
 		}
 		cfg.Policies = policies
-		filters[i] = cfg
+		configs[name] = cfg
 	}
-	return filters
+}
+
+// legacyFilterList 过渡期产出旧链：Router 前置 + enabled 顺序，C 阶段 handler 切换后删除
+func legacyFilterList(router RouterConfig, enabled []string, configs map[string]any) []any {
+	list := make([]any, 0, len(enabled)+1)
+	list = append(list, router)
+	for _, name := range enabled {
+		list = append(list, configs[name])
+	}
+	return list
 }
 
 func qualifiedServiceName(platform, service string) string {
