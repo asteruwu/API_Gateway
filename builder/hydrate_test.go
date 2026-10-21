@@ -2,6 +2,7 @@ package builder
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	gerrors "API_Gateway/pkg/errors"
@@ -73,5 +74,74 @@ func TestHydrateEnabledWithoutConfig(t *testing.T) {
 	err := Hydrate(&gw)
 	if !errors.Is(err, gerrors.ErrFilterConfigNotFound) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrFilterConfigNotFound)
+	}
+}
+
+// TestHydrateTCPLimitValid tcp_limit 正常水合
+func TestHydrateTCPLimitValid(t *testing.T) {
+	gw := GatewayConfig{
+		TCPFilters: PluginSet{
+			Enabled: []string{"tcp_limit"},
+			Configs: map[string]any{"tcp_limit": map[string]any{"max_conn": 8}},
+		},
+	}
+
+	if err := Hydrate(&gw); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	cfg, ok := gw.TCPFilters.Configs["tcp_limit"].(TCPLimiterFilterConfig)
+	if !ok {
+		t.Fatalf("config = %T, want TCPLimiterFilterConfig", gw.TCPFilters.Configs["tcp_limit"])
+	}
+	if cfg.MaxConn != 8 {
+		t.Errorf("max_conn = %d, want 8", cfg.MaxConn)
+	}
+}
+
+// TestHydrateTestTransformerValid testT 正常水合
+func TestHydrateTestTransformerValid(t *testing.T) {
+	gw := GatewayConfig{
+		Transformer: PluginSet{
+			Enabled: []string{"testT"},
+			Configs: map[string]any{"testT": map[string]any{}},
+		},
+	}
+
+	if err := Hydrate(&gw); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if _, ok := gw.Transformer.Configs["testT"].(TestTransformerConfig); !ok {
+		t.Errorf("config = %T, want TestTransformerConfig", gw.Transformer.Configs["testT"])
+	}
+}
+
+// TestHydrateCrossCategory 插件写错类别必须在 hydrate 期就报错，并点明所在的类别
+func TestHydrateCrossCategory(t *testing.T) {
+	cases := []struct {
+		name     string
+		plugin   string
+		category string
+		pick     func(*GatewayConfig) *PluginSet
+	}{
+		{"tcp_limit in http_filters", "tcp_limit", categoryHTTPFilter, func(gw *GatewayConfig) *PluginSet { return &gw.HTTPFilters }},
+		{"tcp_limit in transformer", "tcp_limit", categoryTransformer, func(gw *GatewayConfig) *PluginSet { return &gw.Transformer }},
+		{"auth in tcp_filters", "auth", categoryTCPFilter, func(gw *GatewayConfig) *PluginSet { return &gw.TCPFilters }},
+		{"testT in http_filters", "testT", categoryHTTPFilter, func(gw *GatewayConfig) *PluginSet { return &gw.HTTPFilters }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gw := GatewayConfig{}
+			set := c.pick(&gw)
+			set.Enabled = []string{c.plugin}
+			set.Configs = map[string]any{c.plugin: map[string]any{}}
+
+			err := Hydrate(&gw)
+			if !errors.Is(err, gerrors.ErrInvalidConfig) {
+				t.Fatalf("err = %v, want wrapping %v", err, gerrors.ErrInvalidConfig)
+			}
+			if !strings.Contains(err.Error(), c.category) {
+				t.Errorf("err = %v, want mention category %q", err, c.category)
+			}
+		})
 	}
 }
