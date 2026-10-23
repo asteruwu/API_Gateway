@@ -130,15 +130,33 @@ func validatePoolConfig(cfg PoolConfig) []error {
 	return errs
 }
 
-// validateRouteAuth 校验路由鉴权与 auth 插件的引用一致性，以及鉴权插件自身的参数
-func validateRouteAuth(gw GatewayConfig, platforms []PlatformConfig) []error {
-	enabled := pluginEnabled(gw.HTTPFilters, "auth")
+// validateRouteFilters 同一条 route 不允许重复声明同一个 filter
+func validateRouteFilters(platforms []PlatformConfig) []error {
+	var errs []error
+	for _, p := range platforms {
+		for _, s := range p.Service {
+			for i, r := range s.Routes {
+				seen := make(map[string]bool, len(r.Filters))
+				for _, name := range r.Filters {
+					if seen[name] {
+						errs = append(errs, fmt.Errorf("%w: platform %q service %q route[%d] repeats filter %q",
+							gerrors.ErrInvalidConfig, p.Name, s.Name, i, name))
+						continue
+					}
+					seen[name] = true
+				}
+			}
+		}
+	}
+	return errs
+}
 
-	var (
-		cfg  AuthFilterConfig
-		errs []error
-	)
-	if enabled {
+// validateRouteAuth 校验 auth 与 route 实际 pipeline 的一致性：pipeline 含 auth ⇔ route 声明 auth 块
+func validateRouteAuth(gw GatewayConfig, platforms []PlatformConfig, pipelines map[string][]string) []error {
+	var errs []error
+
+	var cfg AuthFilterConfig
+	if slices.Contains(Calculate(gw, platforms), "auth") {
 		c, ok := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig)
 		if !ok {
 			return []error{fmt.Errorf("%w: auth plugin config missing or of wrong type %T",
@@ -149,29 +167,24 @@ func validateRouteAuth(gw GatewayConfig, platforms []PlatformConfig) []error {
 		errs = append(errs, validateJWTVerifier(cfg.JWT)...)
 	}
 
-	declared := false
 	for _, p := range platforms {
 		for _, s := range p.Service {
+			service := qualifiedServiceName(p.Name, s.Name)
 			for i, r := range s.Routes {
-				if r.Auth == nil {
-					if enabled {
-						errs = append(errs, fmt.Errorf("%w: platform %q service %q route[%d] declares no auth; declare auth or set public: true",
-							gerrors.ErrInvalidAuthConfig, p.Name, s.Name, i))
-					}
-					continue
-				}
-				declared = true
-				if enabled {
-					where := fmt.Sprintf("platform %q service %q route[%d]", p.Name, s.Name, i)
+				where := fmt.Sprintf("platform %q service %q route[%d]", p.Name, s.Name, i)
+				hasAuth := slices.Contains(pipelines[routeID(service, i)], "auth")
+				switch {
+				case hasAuth && r.Auth == nil:
+					errs = append(errs, fmt.Errorf("%w: %s pipeline contains %q but declares no auth block",
+						gerrors.ErrInvalidAuthConfig, where, "auth"))
+				case !hasAuth && r.Auth != nil:
+					errs = append(errs, fmt.Errorf("%w: %s declares auth but pipeline does not contain %q",
+						gerrors.ErrInvalidAuthConfig, where, "auth"))
+				case hasAuth && r.Auth != nil:
 					errs = append(errs, validateRouteAuthRule(where, *r.Auth, cfg.Credentials)...)
 				}
 			}
 		}
-	}
-
-	if declared && !enabled {
-		errs = append(errs, fmt.Errorf("%w: routes declare auth but http_filters %q is not enabled",
-			gerrors.ErrInvalidAuthConfig, "auth"))
 	}
 	return errs
 }
@@ -227,13 +240,4 @@ func validateJWTVerifier(cfg JWTVerifierConfig) []error {
 		errs = append(errs, fmt.Errorf("%w: jwt.leeway must not be negative", gerrors.ErrInvalidAuthConfig))
 	}
 	return errs
-}
-
-func pluginEnabled(set PluginSet, name string) bool {
-	for _, n := range set.Enabled {
-		if n == name {
-			return true
-		}
-	}
-	return false
 }

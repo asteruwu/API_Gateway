@@ -2,6 +2,7 @@ package builder
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	gconst "API_Gateway/pkg/constant"
@@ -754,6 +755,159 @@ func TestCompileRouterFieldPopulated(t *testing.T) {
 	}
 	if len(cfg.Handler.Filter.Router.Rules) != 1 {
 		t.Errorf("Router.Rules = %+v, want 1 rule", cfg.Handler.Filter.Router.Rules)
+	}
+}
+
+// TestCompileRoutePipelineAuthMismatch pipeline 与 auth 声明不一致，两个方向都要拒绝
+func TestCompileRoutePipelineAuthMismatch(t *testing.T) {
+	cases := []struct {
+		name  string
+		gw    GatewayConfig
+		route RouteRuleConfig
+	}{
+		{
+			name:  "pipeline has auth but no auth block",
+			gw:    authGateway(),
+			route: RouteRuleConfig{PathPrefix: "/orders"},
+		},
+		{
+			name:  "auth block but pipeline lacks auth",
+			gw:    authGateway(),
+			route: RouteRuleConfig{PathPrefix: "/public", Filters: []string{"other"}, Auth: &RouteAuthConfig{Public: true}},
+		},
+		{
+			name:  "explicit empty chain with auth block",
+			gw:    authGateway(),
+			route: RouteRuleConfig{PathPrefix: "/public", Filters: []string{}, Auth: &RouteAuthConfig{Credential: gconst.AuthCredentialBearer}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gw := c.gw
+			// 备用 filter 需要有配置，否则先被 hydrate 前置条件挡住，测不到 auth 一致性
+			if gw.HTTPFilters.Configs == nil {
+				gw.HTTPFilters.Configs = map[string]any{}
+			}
+			gw.HTTPFilters.Configs["other"] = struct{}{}
+
+			_, err := Compile(gw, oneRoutePlatform(c.route))
+			if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
+				t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
+			}
+		})
+	}
+}
+
+// TestCompileRoutePipelineAuthBothAbsent pipeline 与 auth 声明都没有，route 即为无鉴权
+func TestCompileRoutePipelineAuthBothAbsent(t *testing.T) {
+	platforms := oneRoutePlatform(RouteRuleConfig{PathPrefix: "/health", Filters: []string{}})
+
+	cfg, err := Compile(authGateway(), platforms)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got := cfg.Handler.Filter.Pipelines["shopA.order#0"]; len(got) != 0 {
+		t.Errorf("pipeline = %v, want empty", got)
+	}
+}
+
+// TestCompileRouteFiltersDuplicate 同一条 route 重复声明同一个 filter 应报错
+func TestCompileRouteFiltersDuplicate(t *testing.T) {
+	gw := authGateway()
+	_, err := Compile(gw, oneRoutePlatform(RouteRuleConfig{
+		PathPrefix: "/orders",
+		Filters:    []string{"auth", "auth"},
+		Auth:       &RouteAuthConfig{Credential: gconst.AuthCredentialBearer},
+	}))
+	if !errors.Is(err, gerrors.ErrInvalidConfig) {
+		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidConfig)
+	}
+	if err == nil || !strings.Contains(err.Error(), "repeats filter") {
+		t.Errorf("err = %v, want mention repeats filter", err)
+	}
+}
+
+// TestCompileAuthReferencedOnlyByRoute auth 不进 enabled、只被 route 引用也应成立
+func TestCompileAuthReferencedOnlyByRoute(t *testing.T) {
+	gw := GatewayConfig{
+		HTTPFilters: PluginSet{
+			Configs: map[string]any{"auth": AuthFilterConfig{
+				Credentials: []string{gconst.AuthCredentialBearer},
+				JWT:         JWTVerifierConfig{SecretEnv: "JWT_SECRET"},
+			}},
+		},
+		Transformer: PluginSet{
+			Enabled: []string{"testT"},
+			Configs: map[string]any{"testT": TestTransformerConfig{}},
+		},
+	}
+	platforms := oneRoutePlatform(RouteRuleConfig{
+		PathPrefix: "/orders",
+		Filters:    []string{"auth"},
+		Auth:       &RouteAuthConfig{Credential: gconst.AuthCredentialBearer},
+	})
+
+	cfg, err := Compile(gw, platforms)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got := cfg.Handler.Filter.Pipelines["shopA.order#0"]; len(got) != 1 || got[0] != "auth" {
+		t.Errorf("pipeline = %v, want [auth]", got)
+	}
+	if _, ok := cfg.Handler.Filter.Configs["auth"].(AuthFilterConfig); !ok {
+		t.Errorf("configs[auth] = %T, want AuthFilterConfig", cfg.Handler.Filter.Configs["auth"])
+	}
+	// enabled 为空，过渡期旧链里只剩 Router
+	if len(cfg.Handler.Filter.Filters) != 1 {
+		t.Errorf("legacy filters = %+v, want only router", cfg.Handler.Filter.Filters)
+	}
+}
+
+// TestCompileRouteReferencedFilterMissingConfig route 引用了 Configs 里没有的 filter
+func TestCompileRouteReferencedFilterMissingConfig(t *testing.T) {
+	_, err := Compile(GatewayConfig{}, oneRoutePlatform(RouteRuleConfig{
+		PathPrefix: "/orders",
+		Filters:    []string{"ghost"},
+	}))
+	if !errors.Is(err, gerrors.ErrFilterConfigNotFound) {
+		t.Errorf("err = %v, want %v", err, gerrors.ErrFilterConfigNotFound)
+	}
+}
+
+// TestCompilePipelineCopiedPerRoute 多条 route 继承同一条默认链时必须各自独立
+func TestCompilePipelineCopiedPerRoute(t *testing.T) {
+	gw := GatewayConfig{
+		HTTPFilters: PluginSet{
+			Enabled: []string{"f1", "f2"},
+			Configs: map[string]any{"f1": struct{}{}, "f2": struct{}{}},
+		},
+		Transformer: PluginSet{
+			Enabled: []string{"testT"},
+			Configs: map[string]any{"testT": TestTransformerConfig{}},
+		},
+	}
+	platforms := []PlatformConfig{{
+		Name: "shopA",
+		Service: []ServiceConfig{{
+			Name:        "order",
+			Transformer: "testT",
+			Instances:   []InstanceConfig{{Addr: "127.0.0.1:8081"}},
+			Routes: []RouteRuleConfig{
+				{PathPrefix: "/a"},
+				{PathPrefix: "/b"},
+			},
+		}},
+	}}
+
+	cfg, err := Compile(gw, platforms)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	p0 := cfg.Handler.Filter.Pipelines["shopA.order#0"]
+	p1 := cfg.Handler.Filter.Pipelines["shopA.order#1"]
+	p0[0] = "mutated"
+	if p1[0] != "f1" {
+		t.Errorf("pipeline[#1] = %v, want untouched [f1 f2]", p1)
 	}
 }
 

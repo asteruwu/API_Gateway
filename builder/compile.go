@@ -37,7 +37,8 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 	byTransformer := groupServicesByTransformer(platforms)
 	errs = append(errs, validateTransformerRefs(gw.Transformer, byTransformer)...)
 	errs = append(errs, validateServiceTransformer(platforms)...)
-	errs = append(errs, validateRouteAuth(gw, platforms)...)
+	errs = append(errs, validateRouteFilters(platforms)...)
+	errs = append(errs, validateRouteAuth(gw, platforms, pipelines)...)
 
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("%w: %w", gerrors.ErrInvalidConfig, errors.Join(errs...))
