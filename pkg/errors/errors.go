@@ -28,8 +28,7 @@ var (
 	// ErrEmptyServiceInstances service 声明了 0 个实例，注册后必然在运行期触发 ErrNoInstance
 	ErrEmptyServiceInstances = errors.New("builder: service has no instances")
 
-	// ErrFilterConfigNotFound PluginSet.Enabled 声明了某个名字要启用，
-	// 但 PluginSet.Configs 里找不到同名配置
+	// ErrFilterConfigNotFound enabled / route filters 引用了注册表中不存在的插件
 	ErrFilterConfigNotFound = errors.New("builder: enabled filter has no matching config")
 
 	// ErrInvalidPoolConfig 连接池配置非法（负数或自相矛盾的取值）

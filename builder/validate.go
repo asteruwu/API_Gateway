@@ -82,7 +82,7 @@ func validateServiceInstances(services []ServiceRef) []error {
 }
 
 // validateTransformerRefs 校验 service 绑定的 transformer 名都已启用
-func validateTransformerRefs(set PluginSet, byTransformer map[string][]string) []error {
+func validateTransformerRefs(set PluginActivation, byTransformer map[string][]string) []error {
 	enabled := make(map[string]bool, len(set.Enabled))
 	for _, name := range set.Enabled {
 		enabled[name] = true
@@ -157,10 +157,10 @@ func validateRouteAuth(gw GatewayConfig, platforms []PlatformConfig, pipelines m
 
 	var cfg AuthFilterConfig
 	if slices.Contains(Calculate(gw, platforms), "auth") {
-		c, ok := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig)
+		c, ok := gw.Plugins.HTTP["auth"].(AuthFilterConfig)
 		if !ok {
 			return []error{fmt.Errorf("%w: auth plugin config missing or of wrong type %T",
-				gerrors.ErrInvalidAuthConfig, gw.HTTPFilters.Configs["auth"])}
+				gerrors.ErrInvalidAuthConfig, gw.Plugins.HTTP["auth"])}
 		}
 		cfg = c
 		errs = append(errs, validateCredentials(cfg.Credentials)...)

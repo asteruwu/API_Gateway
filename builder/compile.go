@@ -22,16 +22,13 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 
 	errs = append(errs, validatePoolConfig(gw.Pool)...)
 
-	tcpFilters, tcpErrs := assembleEnabledList(gw.TCPFilters)
+	tcpFilters, tcpErrs := assembleSelectedList(gw.TCPFilters.Enabled, gw.Plugins.TCP)
 	errs = append(errs, tcpErrs...)
 
-	httpFilters, httpErrs := assembleEnabledMap(PluginSet{
-		Enabled: Calculate(gw, platforms),
-		Configs: gw.HTTPFilters.Configs,
-	})
+	httpFilters, httpErrs := assembleSelectedMap(Calculate(gw, platforms), gw.Plugins.HTTP)
 	errs = append(errs, httpErrs...)
 
-	transformers, transformerErrs := assembleEnabledMap(gw.Transformer)
+	transformers, transformerErrs := assembleSelectedMap(gw.Transformer.Enabled, gw.Plugins.Transformer)
 	errs = append(errs, transformerErrs...)
 
 	byTransformer := groupServicesByTransformer(platforms)

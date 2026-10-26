@@ -11,11 +11,9 @@ import (
 
 func TestCompileSuccess(t *testing.T) {
 	gw := GatewayConfig{
-		Port: "6666",
-		Transformer: PluginSet{
-			Enabled: []string{"testT"},
-			Configs: map[string]any{"testT": TestTransformerConfig{}},
-		},
+		Port:        "6666",
+		Transformer: PluginActivation{Enabled: []string{"testT"}},
+		Plugins:     PluginsConfig{Transformer: map[string]any{"testT": TestTransformerConfig{}}},
 	}
 	platforms := []PlatformConfig{
 		{
@@ -124,10 +122,10 @@ func TestCompileDuplicateServiceNameWithinPlatform(t *testing.T) {
 
 func TestCompileServiceSameNameAcrossPlatformsAllowed(t *testing.T) {
 	// 不同 platform 下同名 service 合法（限定名不同），单独验证不应触发 ErrDuplicateServiceName
-	gw := GatewayConfig{Transformer: PluginSet{
-		Enabled: []string{"testT"},
-		Configs: map[string]any{"testT": TestTransformerConfig{}},
-	}}
+	gw := GatewayConfig{
+		Transformer: PluginActivation{Enabled: []string{"testT"}},
+		Plugins:     PluginsConfig{Transformer: map[string]any{"testT": TestTransformerConfig{}}},
+	}
 	platforms := []PlatformConfig{
 		{Name: "shopA", Service: []ServiceConfig{{Name: "order", Transformer: "testT", Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}}}}},
 		{Name: "shopB", Service: []ServiceConfig{{Name: "order", Transformer: "testT", Instances: []InstanceConfig{{Addr: "127.0.0.1:8091"}}}}},
@@ -166,10 +164,10 @@ func TestCompileDuplicateRoute(t *testing.T) {
 
 func TestCompileRouteMethodPartitionAllowed(t *testing.T) {
 	// 同 host+path，但方法集合不重叠（GET vs POST 分流到不同服务），不应判定冲突
-	gw := GatewayConfig{Transformer: PluginSet{
-		Enabled: []string{"testT"},
-		Configs: map[string]any{"testT": TestTransformerConfig{}},
-	}}
+	gw := GatewayConfig{
+		Transformer: PluginActivation{Enabled: []string{"testT"}},
+		Plugins:     PluginsConfig{Transformer: map[string]any{"testT": TestTransformerConfig{}}},
+	}
 	platforms := []PlatformConfig{
 		{
 			Name: "shopA",
@@ -184,16 +182,14 @@ func TestCompileRouteMethodPartitionAllowed(t *testing.T) {
 	}
 }
 
-func TestCompilePluginSetOnlyEnabledAssembled(t *testing.T) {
-	// 写进 Configs 不代表启用：只有出现在 Enabled 里的名字才会被装配进运行态配置
+func TestCompileOnlyEnabledSelected(t *testing.T) {
+	// 写进注册表不代表启用：只有出现在 Enabled 里的名字才会被装配进运行态配置
 	gw := GatewayConfig{
-		TCPFilters: PluginSet{
-			Enabled: []string{"limit_a"},
-			Configs: map[string]any{
-				"limit_a": TCPLimiterFilterConfig{MaxConn: 10},
-				"limit_b": TCPLimiterFilterConfig{MaxConn: 20}, // 未列入 Enabled，不应出现
-			},
-		},
+		TCPFilters: PluginActivation{Enabled: []string{"limit_a"}},
+		Plugins: PluginsConfig{TCP: map[string]any{
+			"limit_a": TCPLimiterFilterConfig{MaxConn: 10},
+			"limit_b": TCPLimiterFilterConfig{MaxConn: 20}, // 未列入 Enabled，不应出现
+		}},
 	}
 	cfg, err := Compile(gw, nil)
 	if err != nil {
@@ -208,16 +204,14 @@ func TestCompilePluginSetOnlyEnabledAssembled(t *testing.T) {
 	}
 }
 
-func TestCompileHTTPPluginSetAssembledWithRouter(t *testing.T) {
+func TestCompileHTTPSelectedWithRouter(t *testing.T) {
 	// http_filters 同理，且 compile 自动派生的 Router 始终排在最前
 	gw := GatewayConfig{
-		HTTPFilters: PluginSet{
-			Enabled: []string{"testF"},
-			Configs: map[string]any{
-				"testF":   struct{ Name string }{Name: "testF"},
-				"unusedF": struct{ Name string }{Name: "unusedF"}, // 未列入 Enabled
-			},
-		},
+		HTTPFilters: PluginActivation{Enabled: []string{"testF"}},
+		Plugins: PluginsConfig{HTTP: map[string]any{
+			"testF":   struct{ Name string }{Name: "testF"},
+			"unusedF": struct{ Name string }{Name: "unusedF"}, // 未列入 Enabled
+		}},
 	}
 	cfg, err := Compile(gw, nil)
 	if err != nil {
@@ -230,15 +224,29 @@ func TestCompileHTTPPluginSetAssembledWithRouter(t *testing.T) {
 	if _, ok := filters[0].(RouterConfig); !ok {
 		t.Errorf("first http filter = %T, want RouterConfig", filters[0])
 	}
+	configs := cfg.Handler.Filter.Configs
+	if len(configs) != 1 {
+		t.Fatalf("configs = %v, want only the enabled entry", configs)
+	}
+	if _, ok := configs["unusedF"]; ok {
+		t.Errorf("configs unexpectedly contains %q", "unusedF")
+	}
 }
 
-func TestCompilePluginSetEnabledMissingConfig(t *testing.T) {
-	// Enabled 声明了某个名字，但 Configs 里找不到，属于编译期就能确定的疏忽
+func TestCompileEnabledMissingConfig(t *testing.T) {
+	// Enabled 声明了某个名字，但注册表里找不到，属于编译期就能确定的疏忽
 	gw := GatewayConfig{
-		TCPFilters: PluginSet{
-			Enabled: []string{"ghost"},
-			Configs: map[string]any{},
-		},
+		TCPFilters: PluginActivation{Enabled: []string{"ghost"}},
+	}
+	_, err := Compile(gw, nil)
+	if !errors.Is(err, gerrors.ErrFilterConfigNotFound) {
+		t.Errorf("err = %v, want %v", err, gerrors.ErrFilterConfigNotFound)
+	}
+}
+
+func TestCompileHTTPEnabledMissingConfig(t *testing.T) {
+	gw := GatewayConfig{
+		HTTPFilters: PluginActivation{Enabled: []string{"ghost"}},
 	}
 	_, err := Compile(gw, nil)
 	if !errors.Is(err, gerrors.ErrFilterConfigNotFound) {
@@ -248,15 +256,13 @@ func TestCompilePluginSetEnabledMissingConfig(t *testing.T) {
 
 func TestCompileTransformerEnabledAssembledAsMap(t *testing.T) {
 	// transformer 是按名字查找的注册表（不是顺序敏感的链），装配结果应保留 name → config 映射，
-	// 未列入 Enabled 的 Configs 项不应出现
+	// 未列入 Enabled 的注册表项不应出现
 	gw := GatewayConfig{
-		Transformer: PluginSet{
-			Enabled: []string{"testT"},
-			Configs: map[string]any{
-				"testT":   TestTransformerConfig{},
-				"unusedT": TestTransformerConfig{}, // 未列入 Enabled
-			},
-		},
+		Transformer: PluginActivation{Enabled: []string{"testT"}},
+		Plugins: PluginsConfig{Transformer: map[string]any{
+			"testT":   TestTransformerConfig{},
+			"unusedT": TestTransformerConfig{}, // 未列入 Enabled
+		}},
 	}
 	cfg, err := Compile(gw, nil)
 	if err != nil {
@@ -273,10 +279,7 @@ func TestCompileTransformerEnabledAssembledAsMap(t *testing.T) {
 
 func TestCompileTransformerEnabledMissingConfig(t *testing.T) {
 	gw := GatewayConfig{
-		Transformer: PluginSet{
-			Enabled: []string{"ghost"},
-			Configs: map[string]any{},
-		},
+		Transformer: PluginActivation{Enabled: []string{"ghost"}},
 	}
 	_, err := Compile(gw, nil)
 	if !errors.Is(err, gerrors.ErrFilterConfigNotFound) {
@@ -287,10 +290,8 @@ func TestCompileTransformerEnabledMissingConfig(t *testing.T) {
 func TestCompileTransformerBindsServices(t *testing.T) {
 	// service 声明的 transformer 名应被反向聚合成该 transformer 的 Services 列表
 	gw := GatewayConfig{
-		Transformer: PluginSet{
-			Enabled: []string{"testT"},
-			Configs: map[string]any{"testT": TestTransformerConfig{}},
-		},
+		Transformer: PluginActivation{Enabled: []string{"testT"}},
+		Plugins:     PluginsConfig{Transformer: map[string]any{"testT": TestTransformerConfig{}}},
 	}
 	platforms := []PlatformConfig{
 		{Name: "shopA", Service: []ServiceConfig{
@@ -327,10 +328,8 @@ func TestCompileServiceMissingTransformer(t *testing.T) {
 func TestCompileTransformerUnknownServiceRef(t *testing.T) {
 	// service 绑定了未启用的 transformer 名，属编译期可确定的配置错误
 	gw := GatewayConfig{
-		Transformer: PluginSet{
-			Enabled: []string{"testT"},
-			Configs: map[string]any{"testT": TestTransformerConfig{}},
-		},
+		Transformer: PluginActivation{Enabled: []string{"testT"}},
+		Plugins:     PluginsConfig{Transformer: map[string]any{"testT": TestTransformerConfig{}}},
 	}
 	platforms := []PlatformConfig{
 		{Name: "shopA", Service: []ServiceConfig{
@@ -346,18 +345,16 @@ func TestCompileTransformerUnknownServiceRef(t *testing.T) {
 // authGateway 返回一份启用了 auth 插件（含合法 JWT 参数）与 testT transformer 的网关配置
 func authGateway() GatewayConfig {
 	return GatewayConfig{
-		HTTPFilters: PluginSet{
-			Enabled: []string{"auth"},
-			Configs: map[string]any{"auth": AuthFilterConfig{
+		HTTPFilters: PluginActivation{Enabled: []string{"auth"}},
+		Transformer: PluginActivation{Enabled: []string{"testT"}},
+		Plugins: PluginsConfig{
+			HTTP: map[string]any{"auth": AuthFilterConfig{
 				Credentials: []string{gconst.AuthCredentialBearer},
 				JWT: JWTVerifierConfig{
 					SecretEnv: "JWT_SECRET",
 				},
 			}},
-		},
-		Transformer: PluginSet{
-			Enabled: []string{"testT"},
-			Configs: map[string]any{"testT": TestTransformerConfig{}},
+			Transformer: map[string]any{"testT": TestTransformerConfig{}},
 		},
 	}
 }
@@ -441,7 +438,7 @@ func TestCompileRouteIDsAndAuthPolicies(t *testing.T) {
 // TestCompileRouteAuthWithoutPlugin 路由声明了 auth 但未启用 auth 插件，编译期应拒绝
 func TestCompileRouteAuthWithoutPlugin(t *testing.T) {
 	gw := authGateway()
-	gw.HTTPFilters = PluginSet{} // 不启用 auth
+	gw.HTTPFilters = PluginActivation{} // 默认链为空，等于不启用 auth
 
 	_, err := Compile(gw, authPlatforms())
 	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
@@ -471,9 +468,9 @@ func TestCompileAuthEnabledWithoutRouteAuth(t *testing.T) {
 // TestCompileAuthUnsupportedCredential 不支持的凭证类型应被拒绝
 func TestCompileAuthUnsupportedCredential(t *testing.T) {
 	gw := authGateway()
-	ac := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig)
+	ac := gw.Plugins.HTTP["auth"].(AuthFilterConfig)
 	ac.Credentials = []string{"basic"}
-	gw.HTTPFilters.Configs["auth"] = ac
+	gw.Plugins.HTTP["auth"] = ac
 
 	_, err := Compile(gw, authPlatforms())
 	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
@@ -484,9 +481,9 @@ func TestCompileAuthUnsupportedCredential(t *testing.T) {
 // TestCompileAuthInvalidJWT 缺少 secret_env 应被拒绝
 func TestCompileAuthInvalidJWT(t *testing.T) {
 	gw := authGateway()
-	ac := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig)
+	ac := gw.Plugins.HTTP["auth"].(AuthFilterConfig)
 	ac.JWT = JWTVerifierConfig{} // 缺 secret_env
-	gw.HTTPFilters.Configs["auth"] = ac
+	gw.Plugins.HTTP["auth"] = ac
 
 	_, err := Compile(gw, authPlatforms())
 	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
@@ -646,16 +643,14 @@ func TestCompilePipelineInheritsDefault(t *testing.T) {
 // TestCompilePipelineExplicitOverride route 声明 filters 后以声明为准
 func TestCompilePipelineExplicitOverride(t *testing.T) {
 	gw := GatewayConfig{
-		HTTPFilters: PluginSet{
-			Enabled: []string{"testF"},
-			Configs: map[string]any{
+		HTTPFilters: PluginActivation{Enabled: []string{"testF"}},
+		Transformer: PluginActivation{Enabled: []string{"testT"}},
+		Plugins: PluginsConfig{
+			HTTP: map[string]any{
 				"testF":  struct{}{},
 				"testF2": struct{}{},
 			},
-		},
-		Transformer: PluginSet{
-			Enabled: []string{"testT"},
-			Configs: map[string]any{"testT": TestTransformerConfig{}},
+			Transformer: map[string]any{"testT": TestTransformerConfig{}},
 		},
 	}
 	platforms := []PlatformConfig{{
@@ -690,19 +685,17 @@ func TestCompilePipelineExplicitOverride(t *testing.T) {
 	}
 }
 
-// TestCompileConfigsContainsUnion Configs 包含 enabled ∪ route 声明的 filter
+// TestCompileConfigsContainsUnion 运行态 Configs 包含默认链 ∪ route 声明的 filter
 func TestCompileConfigsContainsUnion(t *testing.T) {
 	gw := GatewayConfig{
-		HTTPFilters: PluginSet{
-			Enabled: []string{"testF"},
-			Configs: map[string]any{
+		HTTPFilters: PluginActivation{Enabled: []string{"testF"}},
+		Transformer: PluginActivation{Enabled: []string{"testT"}},
+		Plugins: PluginsConfig{
+			HTTP: map[string]any{
 				"testF":  struct{ N string }{N: "enabled"},
 				"testF2": struct{ N string }{N: "route-only"},
 			},
-		},
-		Transformer: PluginSet{
-			Enabled: []string{"testT"},
-			Configs: map[string]any{"testT": TestTransformerConfig{}},
+			Transformer: map[string]any{"testT": TestTransformerConfig{}},
 		},
 	}
 	platforms := []PlatformConfig{{
@@ -734,10 +727,8 @@ func TestCompileConfigsContainsUnion(t *testing.T) {
 // TestCompileRouterFieldPopulated HTTPFilterConfig.Router 应和 Filters[0] 里的一致
 func TestCompileRouterFieldPopulated(t *testing.T) {
 	gw := GatewayConfig{
-		Transformer: PluginSet{
-			Enabled: []string{"testT"},
-			Configs: map[string]any{"testT": TestTransformerConfig{}},
-		},
+		Transformer: PluginActivation{Enabled: []string{"testT"}},
+		Plugins:     PluginsConfig{Transformer: map[string]any{"testT": TestTransformerConfig{}}},
 	}
 	platforms := []PlatformConfig{{
 		Name: "p",
@@ -785,10 +776,10 @@ func TestCompileRoutePipelineAuthMismatch(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			gw := c.gw
 			// 备用 filter 需要有配置，否则先被 hydrate 前置条件挡住，测不到 auth 一致性
-			if gw.HTTPFilters.Configs == nil {
-				gw.HTTPFilters.Configs = map[string]any{}
+			if gw.Plugins.HTTP == nil {
+				gw.Plugins.HTTP = map[string]any{}
 			}
-			gw.HTTPFilters.Configs["other"] = struct{}{}
+			gw.Plugins.HTTP["other"] = struct{}{}
 
 			_, err := Compile(gw, oneRoutePlatform(c.route))
 			if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
@@ -830,15 +821,13 @@ func TestCompileRouteFiltersDuplicate(t *testing.T) {
 // TestCompileAuthReferencedOnlyByRoute auth 不进 enabled、只被 route 引用也应成立
 func TestCompileAuthReferencedOnlyByRoute(t *testing.T) {
 	gw := GatewayConfig{
-		HTTPFilters: PluginSet{
-			Configs: map[string]any{"auth": AuthFilterConfig{
+		Transformer: PluginActivation{Enabled: []string{"testT"}},
+		Plugins: PluginsConfig{
+			HTTP: map[string]any{"auth": AuthFilterConfig{
 				Credentials: []string{gconst.AuthCredentialBearer},
 				JWT:         JWTVerifierConfig{SecretEnv: "JWT_SECRET"},
 			}},
-		},
-		Transformer: PluginSet{
-			Enabled: []string{"testT"},
-			Configs: map[string]any{"testT": TestTransformerConfig{}},
+			Transformer: map[string]any{"testT": TestTransformerConfig{}},
 		},
 	}
 	platforms := oneRoutePlatform(RouteRuleConfig{
@@ -877,13 +866,11 @@ func TestCompileRouteReferencedFilterMissingConfig(t *testing.T) {
 // TestCompilePipelineCopiedPerRoute 多条 route 继承同一条默认链时必须各自独立
 func TestCompilePipelineCopiedPerRoute(t *testing.T) {
 	gw := GatewayConfig{
-		HTTPFilters: PluginSet{
-			Enabled: []string{"f1", "f2"},
-			Configs: map[string]any{"f1": struct{}{}, "f2": struct{}{}},
-		},
-		Transformer: PluginSet{
-			Enabled: []string{"testT"},
-			Configs: map[string]any{"testT": TestTransformerConfig{}},
+		HTTPFilters: PluginActivation{Enabled: []string{"f1", "f2"}},
+		Transformer: PluginActivation{Enabled: []string{"testT"}},
+		Plugins: PluginsConfig{
+			HTTP:        map[string]any{"f1": struct{}{}, "f2": struct{}{}},
+			Transformer: map[string]any{"testT": TestTransformerConfig{}},
 		},
 	}
 	platforms := []PlatformConfig{{

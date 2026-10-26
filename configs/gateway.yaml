@@ -1,15 +1,10 @@
 gateway:
   port: "6666"
-  tcp_filters:
-    enabled:
-      - tcp_limit
-    configs:
+  plugins:
+    tcp:
       tcp_limit:
         max_conn: 100
-  http_filters:
-    enabled:
-      - auth
-    configs:
+    http:
       auth:
         credentials:
           - bearer
@@ -18,14 +13,20 @@ gateway:
           issuer: https://idp.example.com
           audience: gateway
           leeway: 30s
+    transformer:
+      testT: {}
+  tcp_filters:
+    enabled:
+      - tcp_limit
+  http_filters:
+    enabled:
+      - auth
   decoder:
     max_body: 4096
   encoder: {}
   transformer:
     enabled:
       - testT
-    configs:
-      testT: {}
   pool:
     max_conn: 64
     min_idle: 4

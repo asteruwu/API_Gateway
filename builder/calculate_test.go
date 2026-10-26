@@ -29,7 +29,7 @@ func TestCalculate(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			gw := GatewayConfig{HTTPFilters: PluginSet{Enabled: c.enabled}}
+			gw := GatewayConfig{HTTPFilters: PluginActivation{Enabled: c.enabled}}
 			got := Calculate(gw, c.platforms)
 			if !slices.Equal(got, c.want) {
 				t.Errorf("Calculate = %v, want %v", got, c.want)

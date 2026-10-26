@@ -11,25 +11,23 @@ import (
 // TestHydrateAuthValid 合法的 auth 插件配置应被水合为 AuthFilterConfig
 func TestHydrateAuthValid(t *testing.T) {
 	gw := GatewayConfig{
-		HTTPFilters: PluginSet{
-			Enabled: []string{"auth"},
-			Configs: map[string]any{
-				"auth": map[string]any{
-					"credentials": []any{"bearer"},
-					"jwt": map[string]any{
-						"secret_env": "JWT_SECRET",
-					},
+		HTTPFilters: PluginActivation{Enabled: []string{"auth"}},
+		Plugins: PluginsConfig{HTTP: map[string]any{
+			"auth": map[string]any{
+				"credentials": []any{"bearer"},
+				"jwt": map[string]any{
+					"secret_env": "JWT_SECRET",
 				},
 			},
-		},
+		}},
 	}
 
 	if err := Hydrate(&gw, gw.HTTPFilters.Enabled); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	cfg, ok := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig)
+	cfg, ok := gw.Plugins.HTTP["auth"].(AuthFilterConfig)
 	if !ok {
-		t.Fatalf("config = %T, want AuthFilterConfig", gw.HTTPFilters.Configs["auth"])
+		t.Fatalf("config = %T, want AuthFilterConfig", gw.Plugins.HTTP["auth"])
 	}
 	if len(cfg.Credentials) != 1 || cfg.Credentials[0] != "bearer" {
 		t.Errorf("credentials = %v, want [bearer]", cfg.Credentials)
@@ -50,10 +48,8 @@ func TestHydrateAuthTypeMismatch(t *testing.T) {
 	for name, auth := range cases {
 		t.Run(name, func(t *testing.T) {
 			gw := GatewayConfig{
-				HTTPFilters: PluginSet{
-					Enabled: []string{"auth"},
-					Configs: map[string]any{"auth": auth},
-				},
+				HTTPFilters: PluginActivation{Enabled: []string{"auth"}},
+				Plugins:     PluginsConfig{HTTP: map[string]any{"auth": auth}},
 			}
 			err := Hydrate(&gw, gw.HTTPFilters.Enabled)
 			if !errors.Is(err, gerrors.ErrInvalidConfig) {
@@ -63,13 +59,11 @@ func TestHydrateAuthTypeMismatch(t *testing.T) {
 	}
 }
 
-// TestHydrateEnabledWithoutConfig Enabled 声明了插件但 Configs 缺少对应配置时应报错
+// TestHydrateEnabledWithoutConfig 默认链声明了插件但注册表缺少对应配置时应报错
 func TestHydrateEnabledWithoutConfig(t *testing.T) {
 	gw := GatewayConfig{
-		HTTPFilters: PluginSet{
-			Enabled: []string{"auth"},
-			Configs: map[string]any{},
-		},
+		HTTPFilters: PluginActivation{Enabled: []string{"auth"}},
+		Plugins:     PluginsConfig{HTTP: map[string]any{}},
 	}
 	err := Hydrate(&gw, gw.HTTPFilters.Enabled)
 	if !errors.Is(err, gerrors.ErrFilterConfigNotFound) {
@@ -80,18 +74,16 @@ func TestHydrateEnabledWithoutConfig(t *testing.T) {
 // TestHydrateTCPLimitValid tcp_limit 正常水合
 func TestHydrateTCPLimitValid(t *testing.T) {
 	gw := GatewayConfig{
-		TCPFilters: PluginSet{
-			Enabled: []string{"tcp_limit"},
-			Configs: map[string]any{"tcp_limit": map[string]any{"max_conn": 8}},
-		},
+		TCPFilters: PluginActivation{Enabled: []string{"tcp_limit"}},
+		Plugins:    PluginsConfig{TCP: map[string]any{"tcp_limit": map[string]any{"max_conn": 8}}},
 	}
 
-	if err := Hydrate(&gw, gw.HTTPFilters.Enabled); err != nil {
+	if err := Hydrate(&gw, nil); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	cfg, ok := gw.TCPFilters.Configs["tcp_limit"].(TCPLimiterFilterConfig)
+	cfg, ok := gw.Plugins.TCP["tcp_limit"].(TCPLimiterFilterConfig)
 	if !ok {
-		t.Fatalf("config = %T, want TCPLimiterFilterConfig", gw.TCPFilters.Configs["tcp_limit"])
+		t.Fatalf("config = %T, want TCPLimiterFilterConfig", gw.Plugins.TCP["tcp_limit"])
 	}
 	if cfg.MaxConn != 8 {
 		t.Errorf("max_conn = %d, want 8", cfg.MaxConn)
@@ -101,17 +93,15 @@ func TestHydrateTCPLimitValid(t *testing.T) {
 // TestHydrateTestTransformerValid testT 正常水合
 func TestHydrateTestTransformerValid(t *testing.T) {
 	gw := GatewayConfig{
-		Transformer: PluginSet{
-			Enabled: []string{"testT"},
-			Configs: map[string]any{"testT": map[string]any{}},
-		},
+		Transformer: PluginActivation{Enabled: []string{"testT"}},
+		Plugins:     PluginsConfig{Transformer: map[string]any{"testT": map[string]any{}}},
 	}
 
-	if err := Hydrate(&gw, gw.HTTPFilters.Enabled); err != nil {
+	if err := Hydrate(&gw, nil); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if _, ok := gw.Transformer.Configs["testT"].(TestTransformerConfig); !ok {
-		t.Errorf("config = %T, want TestTransformerConfig", gw.Transformer.Configs["testT"])
+	if _, ok := gw.Plugins.Transformer["testT"].(TestTransformerConfig); !ok {
+		t.Errorf("config = %T, want TestTransformerConfig", gw.Plugins.Transformer["testT"])
 	}
 }
 
@@ -121,21 +111,55 @@ func TestHydrateCrossCategory(t *testing.T) {
 		name     string
 		plugin   string
 		category string
-		pick     func(*GatewayConfig) *PluginSet
+		setup    func(*GatewayConfig) []string
 	}{
-		{"tcp_limit in http_filters", "tcp_limit", categoryHTTPFilter, func(gw *GatewayConfig) *PluginSet { return &gw.HTTPFilters }},
-		{"tcp_limit in transformer", "tcp_limit", categoryTransformer, func(gw *GatewayConfig) *PluginSet { return &gw.Transformer }},
-		{"auth in tcp_filters", "auth", categoryTCPFilter, func(gw *GatewayConfig) *PluginSet { return &gw.TCPFilters }},
-		{"testT in http_filters", "testT", categoryHTTPFilter, func(gw *GatewayConfig) *PluginSet { return &gw.HTTPFilters }},
+		{
+			name:     "tcp_limit in http_filters",
+			plugin:   "tcp_limit",
+			category: categoryHTTPFilter,
+			setup: func(gw *GatewayConfig) []string {
+				gw.HTTPFilters.Enabled = []string{"tcp_limit"}
+				gw.Plugins.HTTP = map[string]any{"tcp_limit": map[string]any{}}
+				return gw.HTTPFilters.Enabled
+			},
+		},
+		{
+			name:     "tcp_limit in transformer",
+			plugin:   "tcp_limit",
+			category: categoryTransformer,
+			setup: func(gw *GatewayConfig) []string {
+				gw.Transformer.Enabled = []string{"tcp_limit"}
+				gw.Plugins.Transformer = map[string]any{"tcp_limit": map[string]any{}}
+				return nil
+			},
+		},
+		{
+			name:     "auth in tcp_filters",
+			plugin:   "auth",
+			category: categoryTCPFilter,
+			setup: func(gw *GatewayConfig) []string {
+				gw.TCPFilters.Enabled = []string{"auth"}
+				gw.Plugins.TCP = map[string]any{"auth": map[string]any{}}
+				return nil
+			},
+		},
+		{
+			name:     "testT in http_filters",
+			plugin:   "testT",
+			category: categoryHTTPFilter,
+			setup: func(gw *GatewayConfig) []string {
+				gw.HTTPFilters.Enabled = []string{"testT"}
+				gw.Plugins.HTTP = map[string]any{"testT": map[string]any{}}
+				return gw.HTTPFilters.Enabled
+			},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			gw := GatewayConfig{}
-			set := c.pick(&gw)
-			set.Enabled = []string{c.plugin}
-			set.Configs = map[string]any{c.plugin: map[string]any{}}
+			httpNames := c.setup(&gw)
 
-			err := Hydrate(&gw, gw.HTTPFilters.Enabled)
+			err := Hydrate(&gw, httpNames)
 			if !errors.Is(err, gerrors.ErrInvalidConfig) {
 				t.Fatalf("err = %v, want wrapping %v", err, gerrors.ErrInvalidConfig)
 			}
@@ -146,42 +170,92 @@ func TestHydrateCrossCategory(t *testing.T) {
 	}
 }
 
-// TestHydrateHTTPFollowsNames http filter 只认传入名单：不在 enabled 但被 route 引用的也要水合
+// TestHydrateHTTPFollowsNames http filter 只认传入名单：不在默认链但被 route 引用的也要水合
 func TestHydrateHTTPFollowsNames(t *testing.T) {
 	gw := GatewayConfig{
-		HTTPFilters: PluginSet{
-			Configs: map[string]any{
-				"auth": map[string]any{"credentials": []any{"bearer"}},
-			},
-		},
+		Plugins: PluginsConfig{HTTP: map[string]any{
+			"auth": map[string]any{"credentials": []any{"bearer"}},
+		}},
 	}
 
 	if err := Hydrate(&gw, []string{"auth"}); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if _, ok := gw.HTTPFilters.Configs["auth"].(AuthFilterConfig); !ok {
-		t.Errorf("config = %T, want AuthFilterConfig", gw.HTTPFilters.Configs["auth"])
+	if _, ok := gw.Plugins.HTTP["auth"].(AuthFilterConfig); !ok {
+		t.Errorf("config = %T, want AuthFilterConfig", gw.Plugins.HTTP["auth"])
 	}
 }
 
-// TestHydrateHTTPIgnoresUnreferenced 名单外的 Configs 条目不水合
+// TestHydrateHTTPIgnoresUnreferenced 名单外的注册表条目不水合
 func TestHydrateHTTPIgnoresUnreferenced(t *testing.T) {
 	raw := map[string]any{"credentials": "not a list"}
 	gw := GatewayConfig{
-		HTTPFilters: PluginSet{
-			Configs: map[string]any{"auth": raw},
-		},
+		Plugins: PluginsConfig{HTTP: map[string]any{"auth": raw}},
 	}
 
 	if err := Hydrate(&gw, nil); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if _, ok := gw.HTTPFilters.Configs["auth"].(map[string]any); !ok {
-		t.Errorf("config = %T, want untouched raw map", gw.HTTPFilters.Configs["auth"])
+	if _, ok := gw.Plugins.HTTP["auth"].(map[string]any); !ok {
+		t.Errorf("config = %T, want untouched raw map", gw.Plugins.HTTP["auth"])
 	}
 }
 
-// TestHydrateReferencedWithNilConfigs 引用了 filter 却整段没写 configs，不能静默通过
+// TestHydrateHTTPRouteOnlyActivated route-only filter 也属于激活集合，必须被水合
+func TestHydrateHTTPRouteOnlyActivated(t *testing.T) {
+	gw := GatewayConfig{
+		Plugins: PluginsConfig{HTTP: map[string]any{
+			"auth": map[string]any{"credentials": []any{"bearer"}},
+		}},
+	}
+	platforms := []PlatformConfig{{
+		Name: "p",
+		Service: []ServiceConfig{{
+			Name:   "s",
+			Routes: []RouteRuleConfig{{PathPrefix: "/a", Filters: []string{"auth"}}},
+		}},
+	}}
+
+	httpActivated := Calculate(gw, platforms)
+	if err := Hydrate(&gw, httpActivated); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if _, ok := gw.Plugins.HTTP["auth"].(AuthFilterConfig); !ok {
+		t.Errorf("config = %T, want AuthFilterConfig", gw.Plugins.HTTP["auth"])
+	}
+}
+
+// TestHydrateOnlyActivatedEntriesValidated 未激活条目允许非法/半填，激活后才校验
+func TestHydrateOnlyActivatedEntriesValidated(t *testing.T) {
+	gw := GatewayConfig{
+		Plugins: PluginsConfig{
+			TCP:         map[string]any{"tcp_limit": map[string]any{"max_conn": "bad"}},
+			HTTP:        map[string]any{"auth": map[string]any{"credentials": "not a list"}},
+			Transformer: map[string]any{"testT": "not-a-map"},
+		},
+	}
+
+	if err := Hydrate(&gw, nil); err != nil {
+		t.Fatalf("inactive entries must not be validated: %v", err)
+	}
+	if _, ok := gw.Plugins.TCP["tcp_limit"].(map[string]any); !ok {
+		t.Errorf("tcp config = %T, want untouched raw map", gw.Plugins.TCP["tcp_limit"])
+	}
+	if _, ok := gw.Plugins.HTTP["auth"].(map[string]any); !ok {
+		t.Errorf("http config = %T, want untouched raw map", gw.Plugins.HTTP["auth"])
+	}
+	if _, ok := gw.Plugins.Transformer["testT"].(string); !ok {
+		t.Errorf("transformer config = %T, want untouched raw value", gw.Plugins.Transformer["testT"])
+	}
+
+	gw.HTTPFilters.Enabled = []string{"auth"}
+	err := Hydrate(&gw, gw.HTTPFilters.Enabled)
+	if !errors.Is(err, gerrors.ErrInvalidConfig) {
+		t.Errorf("err = %v, want wrapping %v", err, gerrors.ErrInvalidConfig)
+	}
+}
+
+// TestHydrateReferencedWithNilConfigs 引用了 filter 却整段没写注册表，不能静默通过
 func TestHydrateReferencedWithNilConfigs(t *testing.T) {
 	gw := GatewayConfig{}
 
