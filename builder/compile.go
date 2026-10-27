@@ -3,44 +3,28 @@ package builder
 import (
 	"errors"
 	"fmt"
-	"strconv"
 
 	gerrors "API_Gateway/pkg/errors"
 )
 
-func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
-	errs := globalValidation(platforms)
-	if len(errs) > 0 {
-		return nil, fmt.Errorf("%w: %w", gerrors.ErrInvalidConfig, errors.Join(errs...))
+// Compile 只负责把 Plan 与水合后的插件配置装配成运行态 Config，不做语义校验。
+func Compile(gw GatewayConfig, plan *Plan) (*Config, error) {
+	if plan == nil {
+		return nil, fmt.Errorf("%w: plan is nil", gerrors.ErrInvalidConfig)
 	}
-
-	rules, policies, pipelines := compileRoutes(platforms, gw.HTTPFilters.Enabled)
-	errs = append(errs, validateRouteConflicts(rules)...)
-
-	service := flattenServices(platforms)
-	errs = append(errs, validateServiceInstances(service)...)
-
-	errs = append(errs, validatePoolConfig(gw.Pool)...)
 
 	tcpFilters, tcpErrs := assembleSelectedList(gw.TCPFilters.Enabled, gw.Plugins.TCP)
-	errs = append(errs, tcpErrs...)
-
-	httpFilters, httpErrs := assembleSelectedMap(Calculate(gw, platforms), gw.Plugins.HTTP)
-	errs = append(errs, httpErrs...)
-
+	httpFilters, httpErrs := assembleSelectedMap(plan.HTTPFilters, gw.Plugins.HTTP)
 	transformers, transformerErrs := assembleSelectedMap(gw.Transformer.Enabled, gw.Plugins.Transformer)
+
+	errs := append(tcpErrs, httpErrs...)
 	errs = append(errs, transformerErrs...)
-
-	byTransformer := groupServicesByTransformer(platforms)
-	errs = append(errs, validateTransformerRefs(gw.Transformer, byTransformer)...)
-	errs = append(errs, validateServiceTransformer(platforms)...)
-	errs = append(errs, validateRouteFilters(platforms)...)
-	errs = append(errs, validateRouteAuth(gw, platforms, pipelines)...)
-
 	if len(errs) > 0 {
-		return nil, fmt.Errorf("%w: %w", gerrors.ErrInvalidConfig, errors.Join(errs...))
+		return nil, fmt.Errorf("compile: %w", errors.Join(errs...))
 	}
 
+	rules, pipelines, policies := assembleRoutes(plan.Routes)
+	services, servicesByTransformer := buildServiceTables(plan.Services)
 	attachAuthPolicies(httpFilters, policies)
 	router := RouterConfig{Rules: rules}
 
@@ -59,97 +43,46 @@ func Compile(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
 				Pipelines: pipelines,
 			},
 			Transformer: TransformerConfig{
-				Transformers: buildTransformerEntries(transformers, byTransformer),
+				Transformers: buildTransformerEntries(transformers, servicesByTransformer),
 			},
 		},
 		Backend: BackendConfig{
-			Service: service,
+			Service: services,
 			Pool:    gw.Pool,
 		},
 	}, nil
 }
 
-func globalValidation(platforms []PlatformConfig) []error {
-	errs := []error{}
-	errs = append(errs, validatePlatformNames(platforms)...)
-	for _, p := range platforms {
-		errs = append(errs, validateServiceNames(p)...)
+// assembleRoutes 从 Plan 派生 Router 规则、pipeline 与策略三张运行态表
+func assembleRoutes(routes []PlannedRoute) ([]RouterRule, map[string][]string, map[string]AuthPolicy) {
+	rules := make([]RouterRule, 0, len(routes))
+	pipelines := make(map[string][]string, len(routes))
+	policies := make(map[string]AuthPolicy, len(routes))
+	for _, r := range routes {
+		rules = append(rules, r.Rule)
+		pipelines[r.Rule.ID] = append([]string(nil), r.Pipeline...)
+		policies[r.Rule.ID] = r.Policy
 	}
-	return errs
+	return rules, pipelines, policies
 }
 
-// flattenServices 把各 platform 下的 service 压平成 backend 注册表用的 ServiceRef 列表
-func flattenServices(platforms []PlatformConfig) []ServiceRef {
-	refs := make([]ServiceRef, 0)
-	for _, p := range platforms {
-		for _, s := range p.Service {
-			instances := make([]InstanceConfig, len(s.Instances))
-			copy(instances, s.Instances)
-			refs = append(refs, ServiceRef{
-				Name:      qualifiedServiceName(p.Name, s.Name),
-				Instances: instances,
-			})
+// buildServiceTables 一次遍历 Plan 中的服务，同时产出 backend 的 ServiceRef 表
+// 和 transformer → service 的绑定表。
+func buildServiceTables(services []PlannedService) ([]ServiceRef, map[string][]string) {
+	refs := make([]ServiceRef, 0, len(services))
+	byTransformer := make(map[string][]string)
+	for _, s := range services {
+		instances := make([]InstanceConfig, len(s.Instances))
+		copy(instances, s.Instances)
+		refs = append(refs, ServiceRef{Name: s.Name, Instances: instances})
+		if s.Transformer != "" {
+			byTransformer[s.Transformer] = append(byTransformer[s.Transformer], s.Name)
 		}
 	}
-	return refs
+	return refs, byTransformer
 }
 
-// compileRoutes 一次遍历平台配置，同时展平路由规则、聚合鉴权策略、产出各 route 的 pipeline
-func compileRoutes(platforms []PlatformConfig, defaultChain []string) ([]RouterRule, map[string]AuthPolicy, map[string][]string) {
-	rules := make([]RouterRule, 0)
-	policies := make(map[string]AuthPolicy)
-	pipelines := make(map[string][]string)
-	for _, p := range platforms {
-		for _, s := range p.Service {
-			service := qualifiedServiceName(p.Name, s.Name)
-			for i, r := range s.Routes {
-				rule := flattenRoute(service, p.Host, r, i)
-				rules = append(rules, rule)
-				policies[rule.ID] = flattenAuthPolicy(r.Auth)
-				pipelines[rule.ID] = routePipeline(r.Filters, defaultChain)
-			}
-		}
-	}
-	return rules, policies, pipelines
-}
-
-func routePipeline(declared, defaultChain []string) []string {
-	src := declared
-	if declared == nil {
-		src = defaultChain
-	}
-	return append(make([]string, 0, len(src)), src...)
-}
-
-// flattenRoute 把单条 route 声明展平为 RouterRule，并按 service+下标生成稳定 ID
-func flattenRoute(service string, hosts []string, route RouteRuleConfig, idx int) RouterRule {
-	return RouterRule{
-		ID:         routeID(service, idx),
-		Hosts:      hosts,
-		PathPrefix: route.PathPrefix,
-		Methods:    route.Methods,
-		Service:    service,
-	}
-}
-
-// flattenAuthPolicy 把编写态的分层声明展平为运行态策略；nil 表示该 route 未声明 auth。
-func flattenAuthPolicy(auth *RouteAuthConfig) AuthPolicy {
-	if auth == nil {
-		return AuthPolicy{}
-	}
-	return AuthPolicy{
-		Public:     auth.Public,
-		Credential: auth.Credential,
-		Roles:      auth.Require.Roles,
-		Scopes:     auth.Require.Scopes,
-	}
-}
-
-func routeID(service string, idx int) string {
-	return service + "#" + strconv.Itoa(idx)
-}
-
-// attachAuthPolicies 把反向聚合出的策略表装进 auth filter 配置
+// attachAuthPolicies 把按 RouteID 聚合的策略表装进 auth filter 配置
 func attachAuthPolicies(configs map[string]any, policies map[string]AuthPolicy) {
 	for name, c := range configs {
 		cfg, ok := c.(AuthFilterConfig)
@@ -161,7 +94,7 @@ func attachAuthPolicies(configs map[string]any, policies map[string]AuthPolicy) 
 	}
 }
 
-// legacyFilterList 过渡期产出旧链：Router 前置 + enabled 顺序，C 阶段 handler 切换后删除
+// legacyFilterList 过渡期产出旧链：Router 前置 + enabled 顺序，handler 切换后删除
 func legacyFilterList(router RouterConfig, enabled []string, configs map[string]any) []any {
 	list := make([]any, 0, len(enabled)+1)
 	list = append(list, router)
@@ -169,24 +102,6 @@ func legacyFilterList(router RouterConfig, enabled []string, configs map[string]
 		list = append(list, configs[name])
 	}
 	return list
-}
-
-func qualifiedServiceName(platform, service string) string {
-	return platform + "." + service
-}
-
-// groupServicesByTransformer 建立 tranformer 到使用该协议的所有服务的映射表
-func groupServicesByTransformer(platforms []PlatformConfig) map[string][]string {
-	m := make(map[string][]string)
-	for _, p := range platforms {
-		for _, s := range p.Service {
-			if s.Transformer == "" {
-				continue
-			}
-			m[s.Transformer] = append(m[s.Transformer], qualifiedServiceName(p.Name, s.Name))
-		}
-	}
-	return m
 }
 
 // buildTransformerEntries 把「已启用配置」与「service 分组」合成运行态注册表

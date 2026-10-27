@@ -26,3 +26,44 @@ func StringsContain(list []string, v string) bool {
 	}
 	return slices.Contains(list, v)
 }
+
+// DuplicateStrings 返回 names 中重复出现的值，按首次重复出现的顺序去重
+func DuplicateStrings(names []string) []string {
+	seen := make(map[string]bool, len(names))
+	duplicated := make(map[string]bool)
+	out := make([]string, 0)
+	for _, name := range names {
+		if !seen[name] {
+			seen[name] = true
+			continue
+		}
+		if duplicated[name] {
+			continue
+		}
+		duplicated[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+// UniqueStrings 按首次出现顺序对字符串切片去重
+func UniqueStrings(names []string) []string {
+	out := make([]string, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+// CloneOrDefault 返回 src 的副本；src 为 nil 时改为返回 fallback 的副本
+func CloneOrDefault[T any](src, fallback []T) []T {
+	if src == nil {
+		src = fallback
+	}
+	return append(make([]T, 0, len(src)), src...)
+}

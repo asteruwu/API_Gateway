@@ -216,8 +216,8 @@ func TestHydrateHTTPRouteOnlyActivated(t *testing.T) {
 		}},
 	}}
 
-	httpActivated := Calculate(gw, platforms)
-	if err := Hydrate(&gw, httpActivated); err != nil {
+	plan := Calculate(gw, platforms)
+	if err := Hydrate(&gw, plan.HTTPFilters); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if _, ok := gw.Plugins.HTTP["auth"].(AuthFilterConfig); !ok {

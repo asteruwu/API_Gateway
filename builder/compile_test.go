@@ -9,6 +9,19 @@ import (
 	gerrors "API_Gateway/pkg/errors"
 )
 
+// compileForTest 走与 Build 相同的「Calculate → 两阶段校验 → Compile」链路。
+// 测试里的插件配置已是具体类型，因此跳过 Hydrate。
+func compileForTest(gw GatewayConfig, platforms []PlatformConfig) (*Config, error) {
+	plan := Calculate(gw, platforms)
+	if err := ValidateWriting(gw, platforms, plan); err != nil {
+		return nil, err
+	}
+	if err := ValidateRuntime(gw, plan); err != nil {
+		return nil, err
+	}
+	return Compile(gw, plan)
+}
+
 func TestCompileSuccess(t *testing.T) {
 	gw := GatewayConfig{
 		Port:        "6666",
@@ -42,7 +55,7 @@ func TestCompileSuccess(t *testing.T) {
 		},
 	}
 
-	cfg, err := Compile(gw, platforms)
+	cfg, err := compileForTest(gw, platforms)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -98,7 +111,7 @@ func TestCompileDuplicatePlatformName(t *testing.T) {
 		{Name: "shopA"},
 		{Name: "shopA"},
 	}
-	_, err := Compile(GatewayConfig{}, platforms)
+	_, err := compileForTest(GatewayConfig{}, platforms)
 	if !errors.Is(err, gerrors.ErrInvalidConfig) || !errors.Is(err, gerrors.ErrDuplicatePlatformName) {
 		t.Errorf("err = %v, want wrapping %v and %v", err, gerrors.ErrInvalidConfig, gerrors.ErrDuplicatePlatformName)
 	}
@@ -114,7 +127,7 @@ func TestCompileDuplicateServiceNameWithinPlatform(t *testing.T) {
 			},
 		},
 	}
-	_, err := Compile(GatewayConfig{}, platforms)
+	_, err := compileForTest(GatewayConfig{}, platforms)
 	if !errors.Is(err, gerrors.ErrDuplicateServiceName) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrDuplicateServiceName)
 	}
@@ -130,7 +143,7 @@ func TestCompileServiceSameNameAcrossPlatformsAllowed(t *testing.T) {
 		{Name: "shopA", Service: []ServiceConfig{{Name: "order", Transformer: "testT", Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}}}}},
 		{Name: "shopB", Service: []ServiceConfig{{Name: "order", Transformer: "testT", Instances: []InstanceConfig{{Addr: "127.0.0.1:8091"}}}}},
 	}
-	if _, err := Compile(gw, platforms); err != nil {
+	if _, err := compileForTest(gw, platforms); err != nil {
 		t.Errorf("unexpected err: %v", err)
 	}
 }
@@ -139,7 +152,7 @@ func TestCompileEmptyServiceInstances(t *testing.T) {
 	platforms := []PlatformConfig{
 		{Name: "shopA", Service: []ServiceConfig{{Name: "order"}}}, // 未声明 Instances
 	}
-	_, err := Compile(GatewayConfig{}, platforms)
+	_, err := compileForTest(GatewayConfig{}, platforms)
 	if !errors.Is(err, gerrors.ErrEmptyServiceInstances) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrEmptyServiceInstances)
 	}
@@ -156,7 +169,7 @@ func TestCompileDuplicateRoute(t *testing.T) {
 			},
 		},
 	}
-	_, err := Compile(GatewayConfig{}, platforms)
+	_, err := compileForTest(GatewayConfig{}, platforms)
 	if !errors.Is(err, gerrors.ErrDuplicateRoute) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrDuplicateRoute)
 	}
@@ -177,7 +190,7 @@ func TestCompileRouteMethodPartitionAllowed(t *testing.T) {
 			},
 		},
 	}
-	if _, err := Compile(gw, platforms); err != nil {
+	if _, err := compileForTest(gw, platforms); err != nil {
 		t.Errorf("unexpected err: %v", err)
 	}
 }
@@ -191,7 +204,7 @@ func TestCompileOnlyEnabledSelected(t *testing.T) {
 			"limit_b": TCPLimiterFilterConfig{MaxConn: 20}, // 未列入 Enabled，不应出现
 		}},
 	}
-	cfg, err := Compile(gw, nil)
+	cfg, err := compileForTest(gw, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -213,7 +226,7 @@ func TestCompileHTTPSelectedWithRouter(t *testing.T) {
 			"unusedF": struct{ Name string }{Name: "unusedF"}, // 未列入 Enabled
 		}},
 	}
-	cfg, err := Compile(gw, nil)
+	cfg, err := compileForTest(gw, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -238,7 +251,7 @@ func TestCompileEnabledMissingConfig(t *testing.T) {
 	gw := GatewayConfig{
 		TCPFilters: PluginActivation{Enabled: []string{"ghost"}},
 	}
-	_, err := Compile(gw, nil)
+	_, err := compileForTest(gw, nil)
 	if !errors.Is(err, gerrors.ErrFilterConfigNotFound) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrFilterConfigNotFound)
 	}
@@ -248,7 +261,7 @@ func TestCompileHTTPEnabledMissingConfig(t *testing.T) {
 	gw := GatewayConfig{
 		HTTPFilters: PluginActivation{Enabled: []string{"ghost"}},
 	}
-	_, err := Compile(gw, nil)
+	_, err := compileForTest(gw, nil)
 	if !errors.Is(err, gerrors.ErrFilterConfigNotFound) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrFilterConfigNotFound)
 	}
@@ -264,7 +277,7 @@ func TestCompileTransformerEnabledAssembledAsMap(t *testing.T) {
 			"unusedT": TestTransformerConfig{}, // 未列入 Enabled
 		}},
 	}
-	cfg, err := Compile(gw, nil)
+	cfg, err := compileForTest(gw, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -281,7 +294,7 @@ func TestCompileTransformerEnabledMissingConfig(t *testing.T) {
 	gw := GatewayConfig{
 		Transformer: PluginActivation{Enabled: []string{"ghost"}},
 	}
-	_, err := Compile(gw, nil)
+	_, err := compileForTest(gw, nil)
 	if !errors.Is(err, gerrors.ErrFilterConfigNotFound) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrFilterConfigNotFound)
 	}
@@ -299,7 +312,7 @@ func TestCompileTransformerBindsServices(t *testing.T) {
 			{Name: "user", Transformer: "testT", Instances: []InstanceConfig{{Addr: "127.0.0.1:8082"}}},
 		}},
 	}
-	cfg, err := Compile(gw, platforms)
+	cfg, err := compileForTest(gw, platforms)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -319,7 +332,7 @@ func TestCompileServiceMissingTransformer(t *testing.T) {
 			{Name: "order", Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}}},
 		}},
 	}
-	_, err := Compile(GatewayConfig{}, platforms)
+	_, err := compileForTest(GatewayConfig{}, platforms)
 	if !errors.Is(err, gerrors.ErrInvalidConfig) || !errors.Is(err, gerrors.ErrTransformerNotFound) {
 		t.Errorf("err = %v, want wrapping %v and %v", err, gerrors.ErrInvalidConfig, gerrors.ErrTransformerNotFound)
 	}
@@ -336,7 +349,7 @@ func TestCompileTransformerUnknownServiceRef(t *testing.T) {
 			{Name: "order", Transformer: "ghost", Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}}},
 		}},
 	}
-	_, err := Compile(gw, platforms)
+	_, err := compileForTest(gw, platforms)
 	if !errors.Is(err, gerrors.ErrInvalidConfig) || !errors.Is(err, gerrors.ErrTransformerNotFound) {
 		t.Errorf("err = %v, want wrapping %v and %v", err, gerrors.ErrInvalidConfig, gerrors.ErrTransformerNotFound)
 	}
@@ -391,7 +404,7 @@ func authConfigOf(t *testing.T, cfg *Config) AuthFilterConfig {
 // TestCompileRouteIDsAndAuthPolicies 校验 compile 为每条 route 生成唯一 ID，
 // 并把 route 声明的 auth 反向聚合进 auth filter 的策略表（以 RouteID 为 key）
 func TestCompileRouteIDsAndAuthPolicies(t *testing.T) {
-	cfg, err := Compile(authGateway(), authPlatforms())
+	cfg, err := compileForTest(authGateway(), authPlatforms())
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -440,7 +453,7 @@ func TestCompileRouteAuthWithoutPlugin(t *testing.T) {
 	gw := authGateway()
 	gw.HTTPFilters = PluginActivation{} // 默认链为空，等于不启用 auth
 
-	_, err := Compile(gw, authPlatforms())
+	_, err := compileForTest(gw, authPlatforms())
 	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
 	}
@@ -459,7 +472,7 @@ func TestCompileAuthEnabledWithoutRouteAuth(t *testing.T) {
 		}},
 	}}
 
-	_, err := Compile(authGateway(), platforms)
+	_, err := compileForTest(authGateway(), platforms)
 	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
 	}
@@ -472,7 +485,7 @@ func TestCompileAuthUnsupportedCredential(t *testing.T) {
 	ac.Credentials = []string{"basic"}
 	gw.Plugins.HTTP["auth"] = ac
 
-	_, err := Compile(gw, authPlatforms())
+	_, err := compileForTest(gw, authPlatforms())
 	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
 	}
@@ -485,7 +498,7 @@ func TestCompileAuthInvalidJWT(t *testing.T) {
 	ac.JWT = JWTVerifierConfig{} // 缺 secret_env
 	gw.Plugins.HTTP["auth"] = ac
 
-	_, err := Compile(gw, authPlatforms())
+	_, err := compileForTest(gw, authPlatforms())
 	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
 	}
@@ -498,7 +511,7 @@ func TestCompileAggregatesAllErrors(t *testing.T) {
 		{Name: "shopA"}, // 重复 platform 名
 		{Name: "shopB", Service: []ServiceConfig{{Name: "order"}, {Name: "order"}}}, // 重复 service 名
 	}
-	_, err := Compile(GatewayConfig{}, platforms)
+	_, err := compileForTest(GatewayConfig{}, platforms)
 	if !errors.Is(err, gerrors.ErrDuplicatePlatformName) {
 		t.Errorf("err = %v, want also wrapping %v", err, gerrors.ErrDuplicatePlatformName)
 	}
@@ -537,7 +550,7 @@ func TestCompileRouteAuthMissingDeclaration(t *testing.T) {
 		}},
 	}}
 
-	_, err := Compile(authGateway(), platforms)
+	_, err := compileForTest(authGateway(), platforms)
 	if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
 	}
@@ -553,7 +566,7 @@ func TestCompileRouteAuthPublicExclusive(t *testing.T) {
 	for name, auth := range cases {
 		t.Run(name, func(t *testing.T) {
 			auth := auth
-			_, err := Compile(authGateway(), oneRoutePlatform(RouteRuleConfig{PathPrefix: "/orders", Auth: &auth}))
+			_, err := compileForTest(authGateway(), oneRoutePlatform(RouteRuleConfig{PathPrefix: "/orders", Auth: &auth}))
 			if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
 				t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
 			}
@@ -563,7 +576,7 @@ func TestCompileRouteAuthPublicExclusive(t *testing.T) {
 
 // TestCompileRouteAuthMissingCredential 非匿名 route 未声明 credential 应被拒绝
 func TestCompileRouteAuthMissingCredential(t *testing.T) {
-	_, err := Compile(authGateway(), oneRoutePlatform(RouteRuleConfig{
+	_, err := compileForTest(authGateway(), oneRoutePlatform(RouteRuleConfig{
 		PathPrefix: "/orders",
 		Auth:       &RouteAuthConfig{Require: RouteAuthRequire{Roles: []string{"admin"}}},
 	}))
@@ -574,7 +587,7 @@ func TestCompileRouteAuthMissingCredential(t *testing.T) {
 
 // TestCompileRouteAuthCredentialNotAccepted route 要求的 credential 不在网关接受列表内应被拒绝
 func TestCompileRouteAuthCredentialNotAccepted(t *testing.T) {
-	_, err := Compile(authGateway(), oneRoutePlatform(RouteRuleConfig{
+	_, err := compileForTest(authGateway(), oneRoutePlatform(RouteRuleConfig{
 		PathPrefix: "/orders",
 		Auth:       &RouteAuthConfig{Credential: "basic"},
 	}))
@@ -601,7 +614,7 @@ func TestCompileAuthPoliciesFullTable(t *testing.T) {
 		}},
 	}}
 
-	cfg, err := Compile(authGateway(), platforms)
+	cfg, err := compileForTest(authGateway(), platforms)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -629,7 +642,7 @@ func TestCompilePipelineInheritsDefault(t *testing.T) {
 	gw := authGateway()
 	platforms := authPlatforms()
 
-	cfg, err := Compile(gw, platforms)
+	cfg, err := compileForTest(gw, platforms)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -667,7 +680,7 @@ func TestCompilePipelineExplicitOverride(t *testing.T) {
 		}},
 	}}
 
-	cfg, err := Compile(gw, platforms)
+	cfg, err := compileForTest(gw, platforms)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -708,7 +721,7 @@ func TestCompileConfigsContainsUnion(t *testing.T) {
 		}},
 	}}
 
-	cfg, err := Compile(gw, platforms)
+	cfg, err := compileForTest(gw, platforms)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -740,7 +753,7 @@ func TestCompileRouterFieldPopulated(t *testing.T) {
 		}},
 	}}
 
-	cfg, err := Compile(gw, platforms)
+	cfg, err := compileForTest(gw, platforms)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -781,7 +794,7 @@ func TestCompileRoutePipelineAuthMismatch(t *testing.T) {
 			}
 			gw.Plugins.HTTP["other"] = struct{}{}
 
-			_, err := Compile(gw, oneRoutePlatform(c.route))
+			_, err := compileForTest(gw, oneRoutePlatform(c.route))
 			if !errors.Is(err, gerrors.ErrInvalidAuthConfig) {
 				t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidAuthConfig)
 			}
@@ -793,7 +806,7 @@ func TestCompileRoutePipelineAuthMismatch(t *testing.T) {
 func TestCompileRoutePipelineAuthBothAbsent(t *testing.T) {
 	platforms := oneRoutePlatform(RouteRuleConfig{PathPrefix: "/health", Filters: []string{}})
 
-	cfg, err := Compile(authGateway(), platforms)
+	cfg, err := compileForTest(authGateway(), platforms)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -805,7 +818,7 @@ func TestCompileRoutePipelineAuthBothAbsent(t *testing.T) {
 // TestCompileRouteFiltersDuplicate 同一条 route 重复声明同一个 filter 应报错
 func TestCompileRouteFiltersDuplicate(t *testing.T) {
 	gw := authGateway()
-	_, err := Compile(gw, oneRoutePlatform(RouteRuleConfig{
+	_, err := compileForTest(gw, oneRoutePlatform(RouteRuleConfig{
 		PathPrefix: "/orders",
 		Filters:    []string{"auth", "auth"},
 		Auth:       &RouteAuthConfig{Credential: gconst.AuthCredentialBearer},
@@ -836,7 +849,7 @@ func TestCompileAuthReferencedOnlyByRoute(t *testing.T) {
 		Auth:       &RouteAuthConfig{Credential: gconst.AuthCredentialBearer},
 	})
 
-	cfg, err := Compile(gw, platforms)
+	cfg, err := compileForTest(gw, platforms)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -854,7 +867,7 @@ func TestCompileAuthReferencedOnlyByRoute(t *testing.T) {
 
 // TestCompileRouteReferencedFilterMissingConfig route 引用了 Configs 里没有的 filter
 func TestCompileRouteReferencedFilterMissingConfig(t *testing.T) {
-	_, err := Compile(GatewayConfig{}, oneRoutePlatform(RouteRuleConfig{
+	_, err := compileForTest(GatewayConfig{}, oneRoutePlatform(RouteRuleConfig{
 		PathPrefix: "/orders",
 		Filters:    []string{"ghost"},
 	}))
@@ -886,7 +899,7 @@ func TestCompilePipelineCopiedPerRoute(t *testing.T) {
 		}},
 	}}
 
-	cfg, err := Compile(gw, platforms)
+	cfg, err := compileForTest(gw, platforms)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -900,7 +913,7 @@ func TestCompilePipelineCopiedPerRoute(t *testing.T) {
 
 // TestCompileAuthPoliciesInConfigs auth 策略必须同时写入 Configs 里的 AuthFilterConfig
 func TestCompileAuthPoliciesInConfigs(t *testing.T) {
-	cfg, err := Compile(authGateway(), authPlatforms())
+	cfg, err := compileForTest(authGateway(), authPlatforms())
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
