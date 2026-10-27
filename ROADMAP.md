@@ -44,11 +44,15 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
 
 **v00-v07 已完成**（路由/配置链路 + 连接池 + release 回调 + 帧定界 transformer + 鉴权 filter）。全部包和接口已就位，`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）。
 
+**v08 进行中**：阶段 A、B 已完成，下一步 C（handler 按 RouteID 执行 pipeline）。当前 `Build` 链路为 `Load → Calculate(单次 Plan) → ValidateWriting → Hydrate → ValidateRuntime → Compile(gw, plan)`；`Calculate` 产出统一 `Plan`，`Compile` 只做装配。B 阶段只改 builder，旧 `HTTPFilterConfig.Filters` 仍驱动 handler，C 切换前 route 级 `filters` 不会实际执行。
+
 相对 v04 的关键变化：Router 真实实现（最长前缀匹配 + Host 分发 + Method 守卫，`req.Service` 传递路由结果）；配置加载链路完整打通（`loader.go` 读 YAML → `hydrate.go` 类型水合 → `compile.go` 编译为运行态），`Build(configDir)` 串联全流程，支持多租户 `gateway.yaml` + `platform.yaml` 双文件配置；`ErrorResponse` 新增 404 映射；通用工具函数抽取到 `pkg/tools/`（`ToInt`、`StringsOverlap`、`StringsContain`、`LoadYAML`）。
 
 相对 v05 的关键变化（v06 连接抽象）：连接池独立成 `backend/pool/` 子包并填实——`Call` 从池借出（`net.Dial` → `pool.Get`）、`next` 升级为 `(service) (net.Conn, func(error), error)`、handler 在 `Transform` 返回后 `release(err)`（成功 `Put`、失败关连接）；第一个 transformer 真实实现改为**配置驱动的帧定界协议**（4 字节长度前缀 + `io.ReadFull`，替换 half-close），并去掉 `defer conn.Close()`；transformer 按 service 绑定（`platform.yaml` 的 `transformer:` → `Compile` 反向聚合 + 校验）；fakebackend 同步升级为帧循环，支持同一后端连接连续服务多请求。
 
 相对 v06 的关键变化（v07 安全认证）：`handler/http_filter/auth/` 落地——`Verifier` 凭证抽象 + JWT(HS256) 实现（`exp/nbf/iss/aud/leeway` + keycloak/azure/generic IdP 布局），`AuthFilter` 四段编排（提取 → 认证 → 授权 → 身份回写），`public` 匿名豁免、认证失败 401（带 `WWW-Authenticate: Bearer`）/授权失败 403、入站 `X-Gateway-*` 保留头剥离；`buildFilter` 接入 `AuthFilterConfig`，filter 短路打通；示例配置启用 `auth` 且每条 route 逐条声明。同时完成安全加固：Router 路径/Host 归一化与前缀段边界校验，handler 写响应超时、错误 body 去敏感（对外只回状态文案）、单请求读入量上限（1MB）。
+
+相对 v07 的关键变化（v08 B 阶段）：编写态拆成 `plugins` 注册表与 `enabled` / route `filters` 激活名单；`Calculate` 单次遍历产出 `Plan`（http filter 并集、路由、服务）；校验拆为 `ValidateWriting`（声明/Plan 不变量）与 `ValidateRuntime`（水合后插件语义）；`Compile(gw, plan)` 只装配运行态，不再遍历 platforms。
 
 仍保留的边界：`Call` 写死 `instances[0]`，负载均衡未接（`LoadBalancer` 接口待用）；transformer 帧协议为长度前缀的**模拟协议**（非真实 gRPC/MCP）；v07 认证仅 HS256 + 单一静态密钥（多凭证机制/注册表、多 IdP、JWKS、RS256、有状态 verifier 均未做，见「明确不在 v07」）。连接池等待/唤醒的重做已在本版落地（见 v06 进度末条），不再是待办。
 
@@ -72,7 +76,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
 
 ## 当前进度
 
-> 最后更新：2026-10-19　｜　`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）
+> 最后更新：2026-10-27　｜　`go build ./...`、`go vet ./...`、`go test ./... -race` 全部通过。
 
 - [x] **v00 项目初始化** —— 完成，数据流已闭合
   - [x] `main.go`：按逆序完成编排（backend → handler → connector）
@@ -131,7 +135,9 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
   - [x] 阶段 F（配置与文档）：`gateway.yaml` 启用 `auth` 并配 `credentials`/`jwt`，`platform.yaml` 逐条声明（含 `public: true` 示例），新增 `builder/config_test.go` 校验示例配置
   - [x] 安全加固 G1–G3（路由）：`path.Clean` 归一化、前缀段边界、Host 剥离端口 + 大小写不敏感
   - [x] 安全加固 G4–G6（handler）：写响应设 write deadline（10s）；错误 body 改回 `http.StatusText`、内部细节只进日志；conn 包 `io.LimitedReader`（1MB）限制单请求读入量
-- [ ] v08 管道细化
+- [ ] **v08 管道细化** —— 进行中：A + B 已完成，下一步 C/D/E/F
+  - [x] 阶段 A：插件注册表按类别隔离
+  - [x] 阶段 B：route 级 pipeline 与单次 Plan，编译装配、校验和测试收口
 - [ ] v09 协议扩展
 - [ ] v10 最终完善
 
@@ -160,7 +166,6 @@ clientConn → Decode → message.Request → filters
 
 ### v08 管道细化
 - 负载均衡：`BManager.Call` 写死 `instances[0]`（由「下一步」阶段 E 处理）
-- 插件注册表：`pluginHydrators` 被 tcp/http filter、transformer 三类共用一个命名空间，错位引用（如把 `tcp_limit` 写进 `http_filters`）到 `buildFilter` 运行时才报错（由阶段 A 处理）
 
 ### v09 协议扩展
 - transformer 在后端连接上的读写未设 deadline，后端挂死时只能靠 reaper 借出超时强杀（默认 10–15s）
@@ -187,56 +192,54 @@ clientConn → Decode → message.Request → filters
 
 ## 下一步（v08 管道细化 · 规划）
 
-> 两条主线：**filter chain 可配置化**（不同路由执行不同 filter 组合）与 **HTTP 层精细限流**；同时收掉挂在 v08 的两项已知待办（负载均衡、插件注册表命名空间）。
+> 两条主线：**filter chain 可配置化**（不同路由执行不同 filter 组合）与 **HTTP 层精细限流**；同时接入负载均衡。B 阶段（配置与编译）已完成，剩余 C/D/E/F。
 
 ### 目标
 
-1. 请求命中路由后，按该路由声明的 filter 序列执行，不再是全局固定链。
+1. 请求命中路由后，按该 route 的 pipeline 执行（B 已完成配置/编译，C 接入 handler）。
 2. 新增请求级限流 filter（按路由配额），与 v03 的连接级限流分层。
 3. `BManager.Call` 接入负载均衡，不再写死 `instances[0]`。
-4. 插件注册表按类别隔离，错位引用在配置加载期即报错。
+4. 插件注册表按类别隔离，并与默认链/route pipeline 解耦：注册表只提供配置体，链只提供名字，错位引用在配置加载期即报错（B 已完成）。
+5. 配置加载期只计算一次 Plan，`Compile` 复用结果，不得重复遍历路由（B 已完成）。
 
 ### 设计契约（实现须遵守）
 
 1. **Router 固定先行**：Router 不参与 route 声明；`Process` 先执行 Router 拿到 `RouteID`，再按 `RouteID` 取 pipeline。
-2. **`enabled` 只定义默认链**：route 不写 `filters`（nil）→ 按 `http_filters.enabled` 顺序执行（保持 v07 行为）；写了（含显式 `[]`）→ 以 route 声明为绝对标准，只跑列出的，不要求出现在 `enabled` 中。需要实例化的 http filter = `enabled` ∪ 各 route 声明。
-3. **策略表按 RouteID 聚合**：与 auth 一致，限流策略也由 `Compile` 反向聚合进 filter 配置；filter 单实例按 `req.RouteID` 查表。
-4. **fail-closed 校验**：route 引用的 filter 必须在 `configs` 中有配置（hydrate 期报错，Router 名写入同样在此被拦）；route `filters` 不可重复；auth 的 fail-closed 规则见 B5。
+2. **`http_filters.enabled` 定义默认链**：route 不写 `filters`（nil）→ 按 `http_filters.enabled` 顺序执行（保持 v07 行为）；写了（含显式 `[]`）→ 以 route 声明为绝对标准，只跑列出的。需要实例化的 http filter = `http_filters.enabled` ∪ 各 route 声明（契约 A；默认链同时参与构造集合，本阶段不改为 effective-pipeline 优化）。
+3. **策略表按 RouteID 聚合**：`Plan` 收集路由策略，`Compile` 装入 filter 配置；filter 单实例按 `req.RouteID` 查表。
+4. **fail-closed 校验**：`http_filters.enabled` / route `filters` 引用的 filter 必须在 `plugins.http` 中存在（ValidateWriting / Compile 报错）；被激活条目里的未知插件、类型错误、跨类别错位在 Hydrate 期报错；未激活条目不校验；route `filters` 不可重复；auth 的 fail-closed 规则见 B5。
 5. **短路语义不变**：任何 filter 返回非 nil response 或 error，链路立即终止，后续 filter、借连接、transformer 都不执行。
 6. **filter 实例全局共享**：限流/鉴权状态须并发安全（一条 conn 一个 goroutine）。
 7. **两级映射不变**：filter 定「请求→服务」，backend 定「服务→实例」；v08 不做换实例重试。
+8. **注册表与链分离**：`plugins.{tcp,http,transformer}` 只提供配置体；各 `enabled` 与 route `filters` 只提供名字。运行态只组装并集，注册表多余条目不得进入运行态。
+9. **Plan 单次计算**：`Build` 只调用一次 `Calculate`（返回 `*Plan`）；`Compile` 只消费 Plan；`ValidateWriting` 可读原始 `platforms` 做声明层校验（nil vs `[]`、auth 是否声明），但不得重复生成 Plan。
 
 ### 阶段 A —— 插件注册表分类（builder）【done】
 
 - A1 `pluginHydrators` 拆成 `tcpFilterHydrators` / `httpFilterHydrators` / `transformerHydrators` 三张表。
-- A2 `hydratePluginSet` 接收对应的表，错误信息带类别；`tcp_limit` 写进 `http_filters` 在 hydrate 期即报错。
+- A2 `hydratePluginSet` 接收对应的表，错误信息带类别；`tcp_limit` 写进 `http_filters` 在 hydrate 期即报错（B7 已替换为按注册表遍历的 `hydrateRegistry`，分类表隔离结论保留）。
 - A3 单测：跨类别错位引用报错，各表正常水合。
 - 主要文件：`builder/hydrate.go`、`builder/hydrate_test.go`。
 
-### 阶段 B —— 路由级 pipeline 配置与编译（builder）
+### 阶段 B —— 路由级 pipeline 配置与编译（builder）【done】
 
-构建链路调整为 `Load → Calculate → Hydrate → Compile`：Calculate 算出需要实例化的 http filter 名单交给 Hydrate，Hydrate 不感知路由。
+目标链路：`Load → Calculate(单次 Plan) → ValidateWriting → Hydrate → ValidateRuntime → Compile(gw, plan)`。
 
-过渡节奏：B 只新增运行态字段，旧 `HTTPFilterConfig.Filters`（Router 前置拼接、仅含 `enabled`）原样保留继续驱动 handler，C 切换后删除。因此 B 合入到 C 完成之间，route 声明但不在 `enabled` 中的 filter 不会实际执行。
+- B1 route 级 `filters`：nil 继承 `http_filters.enabled`，`[]` 为显式空链。
+- B2 `Calculate` 一次遍历产出 http filter 并集；`Hydrate` 只水合激活集合。
+- B3 运行态 `HTTPFilterConfig` 增加 `Router` / `Configs` / `Pipelines`（旧 `Filters` 过渡保留）。
+- B4 `Compile` 从 Plan 装配 Router 规则、pipeline 与策略表。
+- B5 校验 pipeline 与 route auth 声明逐条一致，fail-closed。
+- B6 单测覆盖默认继承、显式覆盖、空链、并集、未配置引用、重复、auth 一致性。
+- B7 编写态拆成 `plugins` 注册表与 `enabled` 激活名单，注册表多余条目不进入运行态。
+- B8 `Calculate` 收敛为单次 Plan（`HTTPFilters` + `Routes` + `Services`）；`Compile(gw, plan)` 只做装配，不再遍历 platforms；校验拆为 `ValidateWriting` / `ValidateRuntime`。
+- B9 配置样例、全量 `build/vet/test -race` 与文档收口。
 
-- B1 编写态：`RouteRuleConfig` 增 `Filters []string`（YAML `filters`）；nil = 继承默认链，`[]` = 显式空链。
-- B2 Calculate + Hydrate 接名单：
-  - 新增 Calculate 步骤，产出 `enabled` ∪ 各 route 声明的 http filter 名单（`[]string`，先 `enabled` 顺序、再按 route 出现顺序，去重；顺序只为报错稳定）；`Build` 在 Load 后调用并传给 `Hydrate`。
-  - `hydratePluginSet` 改为接收名单：tcp/transformer 仍传各自 `Enabled`，http 传 Calculate 结果。
-  - 只改 http 路径：名单非空而 `Configs` 为 nil 时不再静默通过；报错文案由 `enabled but has no config entry` 改为 `referenced but has no config entry`。
-  - `Compile` 内部复用同一纯函数取并集，签名不变。
-- B3 运行态结构：`HTTPFilterConfig` 新增 `Router RouterConfig`、具名表 `map[string]any`（并集，名字 → 配置）、`Pipelines map[string][]string`（RouteID → filter 名序列，全量，每条 route 一条）；旧 `Filters` 保留。
-- B4 编译：`compileRoutes` 展开路由时同时产出 pipeline（nil 按 `enabled` 顺序填默认链，声明则保留原序）；按并集从 `Configs` 建具名表；`attachAuthPolicies` 过渡期同时作用于旧列表与具名表。
-- B5 校验：
-  - route `filters` 重复项编译期报错。
-  - `validateRouteAuth` 重写：由「看全局 `enabled` 是否含 auth」改为「看每条 route 的 pipeline」；规则二选一（待定）——甲：auth 出现在并集中则每条 pipeline 必须含 `auth` 且每条 route 必须声明 `auth` 块；乙：逐条一致性，pipeline 含 auth ⇔ 声明 `auth` 块，两者皆无放行。
-  - 不单独校验 Router 名（已由 hydrate 拦截）。
-- B6 单测收口：默认继承、显式覆盖、显式空链、并集、未配置引用、重复、auth fail-closed。
-- 主要文件：`builder/{platform,config,build,hydrate,compile,validate}.go`、`builder/{hydrate,compile}_test.go`。
+B 阶段只改 builder；`HTTPFilterConfig.Filters` 仍驱动 handler，C 切换前 route 级 `filters` 不实际执行。
 
 ### 阶段 C —— 按 RouteID 执行 pipeline（handler）
 
-- C1 `buildFilter` 改为从 B3 的具名表（并集）构造「Router 实例 + 名字→实例表」，`NewHandler` 把 `Pipelines` 预解析为 `map[RouteID][]HTTPFilter`，避免请求期查名字；切换完成后删除旧 `Filters`，具名表字段是否改名届时再定。
+- C1 `buildFilter` 从运行态 `Configs` 构造「Router 实例 + 名字→实例表」，`NewHandler` 把 `Pipelines` 预解析为 `map[RouteID][]HTTPFilter`，避免请求期查名字；切换完成后删除旧 `Filters`。
 - C2 `Process`：Router 先跑 → 按 `req.RouteID` 取 pipeline → 依次执行，短路/错误语义沿用 v07。
 - C3 pipeline 缺失视为配置错误（fail-closed），不静默放行。
 - C4 既有行为等价：全部 route 都不声明 `filters` 时，执行顺序与 v07 完全一致。
@@ -245,7 +248,7 @@ clientConn → Decode → message.Request → filters
 ### 阶段 D —— HTTP 限流 filter
 
 - D1 配置：route 级 `rate_limit: {qps, burst}`；编写态/运行态分层同 auth。
-- D2 运行态 `RateLimitFilterConfig{Policies map[RouteID]RateLimitPolicy}`，`Compile` 反向聚合；route 的 pipeline 含 `rate_limit` 但未声明策略 = 不限流。
+- D2 运行态 `RateLimitFilterConfig{Policies map[RouteID]RateLimitPolicy}`，由 `Plan` 聚合、`Compile` 装入；route 的 pipeline 含 `rate_limit` 但未声明策略 = 不限流。
 - D3 算法：按 RouteID 的令牌桶（按时间惰性补充），桶状态并发安全；校验 `qps > 0`、`burst >= 1`。
 - D4 拒绝：`ErrRateLimited` → 429 + `Retry-After`，走短路写回；`ErrorResponse` 增映射。route 声明了 `rate_limit` 策略但其 pipeline 不含 `rate_limit` → 编译期报错。
 - D5 单测：连续请求触发限流、令牌恢复、并发安全、无策略放行。
@@ -264,7 +267,7 @@ clientConn → Decode → message.Request → filters
 - F1 testbed：两条路由不同 pipeline（一条 auth + 限流、一条 public）；限流 429 且后端未被触达。
 - F2 testbed：多实例 `round_robin` 分发（两个 fakebackend）。
 - F3 配置样例更新：`gateway.yaml` 启用 `rate_limit`，`platform.yaml` 逐条给出 `filters` / `rate_limit` / `lb` 示例。
-- F4 ROADMAP 勾选，删除「已知待办」v08 两条。
+- F4 ROADMAP 勾选，删除「已知待办」v08 负载均衡条。
 
 ### 明确不在 v08
 
@@ -275,4 +278,4 @@ clientConn → Decode → message.Request → filters
 
 ### 顺序
 
-`A → B → C → D → E → F`。A 独立且最小；B 定契约、C 消费契约、D 依赖 C 的 pipeline；E 与 C/D 无耦合可并行；F 收口。
+`A → B → C → D → E → F`。A、B 已完成；C 消费 Plan 产出的 pipeline；D 依赖 C；E 与 C/D 无耦合可并行；F 收口。
