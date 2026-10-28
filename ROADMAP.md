@@ -44,7 +44,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
 
 **v00-v07 已完成**（路由/配置链路 + 连接池 + release 回调 + 帧定界 transformer + 鉴权 filter）。全部包和接口已就位，`go build ./...`、`go vet ./...`、`go test ./...` 全部通过（含 `-race`）。
 
-**v08 进行中**：阶段 A、B 已完成，下一步 C（handler 按 RouteID 执行 pipeline）。当前 `Build` 链路为 `Load → Calculate(单次 Plan) → ValidateWriting → Hydrate → ValidateRuntime → Compile(gw, plan)`；`Calculate` 产出统一 `Plan`，`Compile` 只做装配。B 阶段只改 builder，旧 `HTTPFilterConfig.Filters` 仍驱动 handler，C 切换前 route 级 `filters` 不会实际执行。
+**v08 进行中**：阶段 A–C 已完成，下一步 D（HTTP 限流 filter）。当前 `Build` 链路为 `Load → Calculate(单次 Plan) → ValidateWriting → Hydrate → ValidateRuntime → Compile(gw, plan)`；`Calculate` 产出统一 `Plan`，`Compile` 只做装配。C 阶段 handler 已切换为按 `RouteID` 取 pipeline 执行，旧 `Filters` 已删除。
 
 相对 v04 的关键变化：Router 真实实现（最长前缀匹配 + Host 分发 + Method 守卫，`req.Service` 传递路由结果）；配置加载链路完整打通（`loader.go` 读 YAML → `hydrate.go` 类型水合 → `compile.go` 编译为运行态），`Build(configDir)` 串联全流程，支持多租户 `gateway.yaml` + `platform.yaml` 双文件配置；`ErrorResponse` 新增 404 映射；通用工具函数抽取到 `pkg/tools/`（`ToInt`、`StringsOverlap`、`StringsContain`、`LoadYAML`）。
 
@@ -53,6 +53,8 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
 相对 v06 的关键变化（v07 安全认证）：`handler/http_filter/auth/` 落地——`Verifier` 凭证抽象 + JWT(HS256) 实现（`exp/nbf/iss/aud/leeway` + keycloak/azure/generic IdP 布局），`AuthFilter` 四段编排（提取 → 认证 → 授权 → 身份回写），`public` 匿名豁免、认证失败 401（带 `WWW-Authenticate: Bearer`）/授权失败 403、入站 `X-Gateway-*` 保留头剥离；`buildFilter` 接入 `AuthFilterConfig`，filter 短路打通；示例配置启用 `auth` 且每条 route 逐条声明。同时完成安全加固：Router 路径/Host 归一化与前缀段边界校验，handler 写响应超时、错误 body 去敏感（对外只回状态文案）、单请求读入量上限（1MB）。
 
 相对 v07 的关键变化（v08 B 阶段）：编写态拆成 `plugins` 注册表与 `enabled` / route `filters` 激活名单；`Calculate` 单次遍历产出 `Plan`（http filter 并集、路由、服务）；校验拆为 `ValidateWriting`（声明/Plan 不变量）与 `ValidateRuntime`（水合后插件语义）；`Compile(gw, plan)` 只装配运行态，不再遍历 platforms。
+
+相对 v08 B 的关键变化（v08 C 阶段）：handler 切换为 Router 先行 + 按 `RouteID` 取 pipeline 执行（`buildFilter` 从 `Configs` 构造名字→实例表，`buildPipelines` 预解析为 `map[RouteID][]HTTPFilter`）；pipeline 缺失 = `ErrPipelineNotFound`（fail-closed）；旧 `HTTPFilterConfig.Filters` 字段及 `Compile` 中填充它的代码已删除。
 
 仍保留的边界：`Call` 写死 `instances[0]`，负载均衡未接（`LoadBalancer` 接口待用）；transformer 帧协议为长度前缀的**模拟协议**（非真实 gRPC/MCP）；v07 认证仅 HS256 + 单一静态密钥（多凭证机制/注册表、多 IdP、JWKS、RS256、有状态 verifier 均未做，见「明确不在 v07」）。连接池等待/唤醒的重做已在本版落地（见 v06 进度末条），不再是待办。
 
@@ -135,9 +137,10 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 在连接�
   - [x] 阶段 F（配置与文档）：`gateway.yaml` 启用 `auth` 并配 `credentials`/`jwt`，`platform.yaml` 逐条声明（含 `public: true` 示例），新增 `builder/config_test.go` 校验示例配置
   - [x] 安全加固 G1–G3（路由）：`path.Clean` 归一化、前缀段边界、Host 剥离端口 + 大小写不敏感
   - [x] 安全加固 G4–G6（handler）：写响应设 write deadline（10s）；错误 body 改回 `http.StatusText`、内部细节只进日志；conn 包 `io.LimitedReader`（1MB）限制单请求读入量
-- [ ] **v08 管道细化** —— 进行中：A + B 已完成，下一步 C/D/E/F
+- [ ] **v08 管道细化** —— 进行中：A–C 已完成，下一步 D/E/F
   - [x] 阶段 A：插件注册表按类别隔离
   - [x] 阶段 B：route 级 pipeline 与单次 Plan，编译装配、校验和测试收口
+  - [x] 阶段 C：handler 按 RouteID 执行 pipeline，删除旧 `Filters` 字段
 - [ ] v09 协议扩展
 - [ ] v10 最终完善
 
@@ -180,7 +183,7 @@ clientConn → Decode → message.Request → filters
 - 有状态 verifier（session、token 黑名单）
 - 出站身份透传与防伪签名 / mTLS（归 transformer，真实协议时落地）
 - 更多授权维度（apikey subscription、ABAC、IP 白名单）
-- 限流 / 配额
+- 更多限流维度（per-identity、per-IP `Limiter` 实现 + 动态桶淘汰）/ 分布式限流
 
 ## 测试基础设施
 
@@ -192,7 +195,7 @@ clientConn → Decode → message.Request → filters
 
 ## 下一步（v08 管道细化 · 规划）
 
-> 两条主线：**filter chain 可配置化**（不同路由执行不同 filter 组合）与 **HTTP 层精细限流**；同时接入负载均衡。B 阶段（配置与编译）已完成，剩余 C/D/E/F。
+> 两条主线：**filter chain 可配置化**（不同路由执行不同 filter 组合）与 **HTTP 层精细限流**；同时接入负载均衡。A–C 已完成（插件注册表分类 + pipeline 配置/编译 + handler 按 RouteID 执行），剩余 D/E/F。
 
 ### 目标
 
@@ -237,7 +240,7 @@ clientConn → Decode → message.Request → filters
 
 B 阶段只改 builder；`HTTPFilterConfig.Filters` 仍驱动 handler，C 切换前 route 级 `filters` 不实际执行。
 
-### 阶段 C —— 按 RouteID 执行 pipeline（handler）
+### 阶段 C —— 按 RouteID 执行 pipeline（handler）【done】
 
 - C1 `buildFilter` 从运行态 `Configs` 构造「Router 实例 + 名字→实例表」，`NewHandler` 把 `Pipelines` 预解析为 `map[RouteID][]HTTPFilter`，避免请求期查名字；切换完成后删除旧 `Filters`。
 - C2 `Process`：Router 先跑 → 按 `req.RouteID` 取 pipeline → 依次执行，短路/错误语义沿用 v07。
@@ -247,12 +250,61 @@ B 阶段只改 builder；`HTTPFilterConfig.Filters` 仍驱动 handler，C 切换
 
 ### 阶段 D —— HTTP 限流 filter
 
-- D1 配置：route 级 `rate_limit: {qps, burst}`；编写态/运行态分层同 auth。
-- D2 运行态 `RateLimitFilterConfig{Policies map[RouteID]RateLimitPolicy}`，由 `Plan` 聚合、`Compile` 装入；route 的 pipeline 含 `rate_limit` 但未声明策略 = 不限流。
-- D3 算法：按 RouteID 的令牌桶（按时间惰性补充），桶状态并发安全；校验 `qps > 0`、`burst >= 1`。
-- D4 拒绝：`ErrRateLimited` → 429 + `Retry-After`，走短路写回；`ErrorResponse` 增映射。route 声明了 `rate_limit` 策略但其 pipeline 不含 `rate_limit` → 编译期报错。
-- D5 单测：连续请求触发限流、令牌恢复、并发安全、无策略放行。
-- 主要文件：`handler/http_filter/ratelimit/*`、`builder/{platform,config,compile,validate,hydrate}.go`、`pkg/errors/errors.go`。
+#### 结构设计
+
+三层：**filter（分发）→ Limiter（维度 + 判定）→ TokenBucket（令牌算法）**。
+
+```
+RateLimitFilter
+  └── limiters map[RouteID]Limiter     ← 路由配置决定归哪个 Limiter
+        ├── RouteLimiter（v08）
+        │     └── buckets map[RouteID]*TokenBucket   ← 构造时参数烘进桶，预建
+        ├── IPLimiter（后续）
+        │     └── params + buckets map[RouteID+IP]*TokenBucket  ← 参数留存，桶懒建 + 淘汰
+        └── IdentityLimiter（后续）
+              └── 同 IPLimiter，key 换 Subject
+```
+
+**Filter 只做分发**：按 `req.RouteID` 找到负责的 Limiter，调 `Allow`；找不到 = 该路由无限流，放行。不持有参数，不知道维度。
+
+```go
+type RateLimitFilter struct {
+    limiters map[string]Limiter
+}
+func (f *RateLimitFilter) HandleHTTPFilt(req) {
+    limiter, ok := f.limiters[req.RouteID]  // 路由 → limiter
+    if !ok { return nil, nil }               // 无限流
+    ok, retryAfter := limiter.Allow(req)
+    if !ok { return retryResponse(retryAfter), ErrRateLimited }
+    return nil, nil
+}
+```
+
+**Limiter 接口**：`Allow(req) (ok bool, retryAfter time.Duration)`。每种维度一个实现，拥有参数和桶，判定完全自包含。
+
+**RouteLimiter（v08）**：构造时拿 `map[RouteID]RateLimitParams`，为每条路由预建一个 `TokenBucket`（QPS/burst 烘进桶里）。请求时按 `req.RouteID` 查桶，桶自己判定。参数只在构造时使用，运行时不以独立形态存在。
+
+**TokenBucket（具体类型，非接口）**：惰性补充（每次 Allow 按 elapsed × qps 补令牌，上限 burst），时间源可注入（单测验证令牌恢复），每桶一把 mutex。各 Limiter 实现内部组合使用。
+
+**构造时的绑定**：`buildFilter` 根据路由配置决定每条路由归哪个 Limiter。v08 所有路由指向同一个 `RouteLimiter` 实例；后续加 per-IP 时，对应路由指向 `IPLimiter` 实例，filter 代码和接口都不变。
+
+**配置规则**：
+- pipeline 含 `rate_limit` 但 route 未声明参数 → 不限流（放行）。与 auth 的 fail-closed 不同，限流不涉及安全边界。
+- route 声明了 `rate_limit` 但 pipeline 不含 `rate_limit` → 编译期报错。
+- 推荐顺序 `[auth, rate_limit]`：先挡非法请求再计数，避免攻击流量消耗正常配额。
+- 单机限流：每个进程独立桶，多副本部署时总限额 = N × qps。
+
+**数据流**：`builder Compile → map[RouteID]RateLimitParams → NewRouteLimiter(params) → 参数烘进 TokenBucket → 请求时 bucket.Allow() 自判定`。
+
+#### 子任务
+
+- D1 配置与 Plan：`RouteRuleConfig` 加 `RateLimit *RouteRateLimitConfig{QPS,Burst}`；运行态 `RateLimitFilterConfig{Params map[RouteID]RateLimitParams}` / `RateLimitParams{QPS,Burst}` 进 `config.go`；`httpFilterHydrators` 注册 `rate_limit`（照 `hydrateTCPLimit` 写法）；`PlannedRoute` 增 `RateLimitParams`，`Calculate` 展平。
+- D2 校验与编译：`ValidateWriting` 新增 `validateRouteRateLimitDeclarations`（pipeline 含 `rate_limit` ↔ 声明一致性，与 auth 的校验对称）；`ValidateRuntime` 校验 `qps > 0`、`burst >= 1`；`Compile` 新增 `attachRateLimitParams` 装入参数表（同 `attachAuthPolicies`）。
+- D3 令牌桶：`handler/http_filter/ratelimit/bucket.go`，`TokenBucket` 具体类型（`Allow(now) (bool, time.Duration)`）；单测覆盖连续消费耗尽、时间推进恢复、并发安全。
+- D4 Limiter 接口 + RouteLimiter：`handler/http_filter/ratelimit/limiter.go`，`Limiter` 接口 + `NewRouteLimiter(params)` 预建桶；单测覆盖放行 / 超限 / 多路由隔离。
+- D5 Filter + handler 接入：`handler/http_filter/ratelimit/ratelimit.go`，`RateLimitFilter` 分发；`handler.go` 的 `buildFilter` 增 `case RateLimitFilterConfig`（构造 `RouteLimiter` + 绑定路由 → limiter 映射 + `RateLimitFilter`）；`ErrorResponse` 增 `ErrRateLimited → 429` 映射；`pkg/errors` 新增 `ErrRateLimited`。
+- D6 单测与配置样例：filter 级单测（放行、超限 429 + `Retry-After`、无参数放行、并发安全）；`gateway.yaml` / `platform.yaml` 更新。
+- 主要文件：`handler/http_filter/ratelimit/`（bucket.go、limiter.go、ratelimit.go）、`builder/{platform,config,calculate,compile,validate_writing,validate_runtime,hydrate_http}.go`、`handler/handler.go`、`pkg/errors/errors.go`。
 
 ### 阶段 E —— 负载均衡（backend）
 
@@ -272,10 +324,10 @@ B 阶段只改 builder；`HTTPFilterConfig.Filters` 仍驱动 handler，C 切换
 ### 明确不在 v08
 
 - 换实例重试、熔断、主动健康探测（留 v09/v10）。
-- per-identity / per-IP / 分布式限流（v08 只做单机 route 级）。
+- per-identity / per-IP / 分布式限流（v08 只做单机 route 级 `RouteLimiter`；后续维度实现 `Limiter` 接口即可，不改编排层）。
 - pipeline 热加载、按 method/host 再细分 filter 组合。
 - 多凭证 / 多 IdP / JWKS / RS256（未定版本）。
 
 ### 顺序
 
-`A → B → C → D → E → F`。A、B 已完成；C 消费 Plan 产出的 pipeline；D 依赖 C；E 与 C/D 无耦合可并行；F 收口。
+`A → B → C → D → E → F`。A–C 已完成；D 新增限流 filter；E 与 D 无耦合可并行；F 收口。
