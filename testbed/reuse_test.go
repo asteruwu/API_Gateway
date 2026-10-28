@@ -19,11 +19,13 @@ func TestBackendConnReuse(t *testing.T) {
 	t.Cleanup(func() { _ = fb.Close() })
 
 	const gatewayAddr = "127.0.0.1:9994"
+	router := routerConfig(nil, map[string][]string{"testBackend": {"/"}})
 	cfg := &builder.Config{
 		Connector: builder.ConnectorConfig{Port: "9994"},
 		Handler: builder.HandlerConfig{
 			Filter: builder.HTTPFilterConfig{
-				Filters: []any{routerConfig(nil, map[string][]string{"testBackend": {"/"}})},
+				Router:    router,
+				Pipelines: pipelinesFor(router),
 			},
 		},
 		Backend: backendConfig(map[string][]string{"testBackend": {fb.RealAddr()}}),

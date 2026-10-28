@@ -42,11 +42,13 @@ func echoViaKeepAlive(t *testing.T, conn net.Conn, reader *bufio.Reader, want []
 func TestEchoKeepAlive(t *testing.T) {
 	backendAddr := startEchoBackend(t)
 
+	router := routerConfig(nil, map[string][]string{"testBackend": {"/"}})
 	cfg := &builder.Config{
 		Connector: builder.ConnectorConfig{Port: "9997"},
 		Handler: builder.HandlerConfig{
 			Filter: builder.HTTPFilterConfig{
-				Filters: []any{routerConfig(nil, map[string][]string{"testBackend": {"/"}})},
+				Router:    router,
+				Pipelines: pipelinesFor(router),
 			},
 		},
 		Backend: backendConfig(map[string][]string{"testBackend": {backendAddr}}),

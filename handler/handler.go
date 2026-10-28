@@ -26,7 +26,8 @@ import (
 type HTTPHandler struct {
 	decoder      *Decoder
 	encoder      *Encoder
-	filters      []hf.HTTPFilter
+	router       *hf.Router
+	pipelines    map[string][]hf.HTTPFilter
 	transformers map[string]transformer.Transformer
 	next         func(service string) (net.Conn, func(error), error)
 }
@@ -41,8 +42,11 @@ type ConnHandler struct {
 func NewHandler(cfg builder.HandlerConfig, next func(service string) (net.Conn, func(error), error)) (*HTTPHandler, error) {
 	decoder := NewDecoder(cfg.Decoder)
 	encoder := NewEncoder(cfg.Encoder)
-	// 初始化 filters 和 transformer
-	filters, err := buildFilter(cfg.Filter.Filters)
+	router, filtertable, err := buildFilter(cfg.Filter)
+	if err != nil {
+		return nil, err
+	}
+	pipelines, err := buildPipelines(cfg.Filter.Pipelines, filtertable)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +57,8 @@ func NewHandler(cfg builder.HandlerConfig, next func(service string) (net.Conn, 
 	return &HTTPHandler{
 		decoder:      decoder,
 		encoder:      encoder,
-		filters:      filters,
+		router:       router,
+		pipelines:    pipelines,
 		transformers: transformers,
 		next:         next,
 	}, nil
@@ -74,25 +79,31 @@ func (h *HTTPHandler) Process(ch *ConnHandler) (resp *message.Response, err erro
 		return nil, err
 	}
 	msgReq.RemoteAddr = ch.conn.RemoteAddr().String()
-	// 2. filter 编排
-	for _, f := range h.filters {
-		resp, err := f.HandleHTTPFilt(&msgReq)
-		if err != nil {
-			return resp, err
-		}
-		if resp != nil {
-			return resp, nil
-		}
+	// 2. Router 查找 RouteID / Service
+	resp, err = h.router.HandleHTTPFilt(&msgReq)
+	if err != nil || resp != nil {
+		return resp, err
 	}
 	if msgReq.Service == "" {
 		return nil, gerrors.ErrServiceNotFound
 	}
-	// 3. 按 service 选取 transformer
+	// 3. 执行 pipeline
+	chain, ok := h.pipelines[msgReq.RouteID]
+	if !ok {
+		return nil, fmt.Errorf("%w: route %q", gerrors.ErrPipelineNotFound, msgReq.RouteID)
+	}
+	for _, f := range chain {
+		resp, err = f.HandleHTTPFilt(&msgReq)
+		if err != nil || resp != nil {
+			return resp, err
+		}
+	}
+	// 4. 按 service 选取 transformer
 	tr, err := h.pickTransformer(msgReq.Service)
 	if err != nil {
 		return nil, err
 	}
-	// 4. next 调用：借出后端连接，并拿到 release 回调
+	// 5. next 调用：借出后端连接，并拿到 release 回调
 	log.Println("[handler]pass message to backend")
 	conn, release, err := h.next(msgReq.Service)
 	if err != nil {
@@ -105,7 +116,7 @@ func (h *HTTPHandler) Process(ch *ConnHandler) (resp *message.Response, err erro
 		}
 		release(err)
 	}()
-	// 5. 协议转换
+	// 6. 协议转换
 	return tr.Transform(&msgReq, conn)
 }
 
@@ -137,32 +148,48 @@ func (h *HTTPHandler) HandleHTTPConn(conn net.Conn) error {
 	}
 }
 
-func buildFilter(cfgs []any) ([]hf.HTTPFilter, error) {
-	filters := []hf.HTTPFilter{}
+// buildFilter 从运行态配置构造 Router 实例和「名字 → filter 实例」表
+func buildFilter(cfg builder.HTTPFilterConfig) (*hf.Router, map[string]hf.HTTPFilter, error) {
+	router, err := hf.NewRouter(cfg.Router)
+	if err != nil {
+		log.Printf("[handler]failed to initialize router: %s", err.Error())
+		return nil, nil, err
+	}
 
-	for i, cfg := range cfgs {
-		switch filter := cfg.(type) {
-		case builder.RouterConfig:
-			router, err := hf.NewRouter(filter)
-			if err != nil {
-				log.Printf("[handler]failed to initialize router: %s", err.Error())
-				return nil, err
-			}
-			filters = append(filters, router)
+	table := make(map[string]hf.HTTPFilter, len(cfg.Configs))
+	for name, raw := range cfg.Configs {
+		switch filter := raw.(type) {
 		case builder.AuthFilterConfig:
 			authFilter, err := auth.NewAuthFilter(filter)
 			if err != nil {
 				log.Printf("[handler]failed to initialize auth filter: %s", err.Error())
-				return nil, err
+				return nil, nil, err
 			}
-			filters = append(filters, authFilter)
+			table[name] = authFilter
 		default:
-			log.Printf("[handler]failed to initialize http filter %d, unsupported config type %T", i, cfg)
-			return nil, gerrors.ErrInitializeHTTPFiltersFailed
+			log.Printf("[handler]failed to initialize http filter %q, unsupported config type %T", name, raw)
+			return nil, nil, gerrors.ErrInitializeHTTPFiltersFailed
 		}
 	}
+	return router, table, nil
+}
 
-	return filters, nil
+// buildPipelines 把 route pipeline 的名字预解析为共享的 filter 实例
+func buildPipelines(pipelines map[string][]string, table map[string]hf.HTTPFilter) (map[string][]hf.HTTPFilter, error) {
+	result := make(map[string][]hf.HTTPFilter, len(pipelines))
+	for routeID, names := range pipelines {
+		chain := make([]hf.HTTPFilter, 0, len(names))
+		for _, name := range names {
+			f, ok := table[name]
+			if !ok {
+				return nil, fmt.Errorf("%w: route %q pipeline references unknown filter %q",
+					gerrors.ErrInitializeHTTPFiltersFailed, routeID, name)
+			}
+			chain = append(chain, f)
+		}
+		result[routeID] = chain
+	}
+	return result, nil
 }
 
 func buildTransformer(cfg builder.TransformerConfig) (map[string]transformer.Transformer, error) {

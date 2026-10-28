@@ -91,8 +91,9 @@ func echoViaHalfClose(t *testing.T, conn net.Conn, want []byte) []byte {
 func routerConfig(hosts []string, rules map[string][]string) builder.RouterConfig {
 	ruleList := make([]builder.RouterRule, 0, len(rules))
 	for service, prefixes := range rules {
-		for _, p := range prefixes {
+		for i, p := range prefixes {
 			ruleList = append(ruleList, builder.RouterRule{
+				ID:         fmt.Sprintf("%s#%d", service, i),
 				Hosts:      hosts,
 				PathPrefix: p,
 				Service:    service,
@@ -100,6 +101,16 @@ func routerConfig(hosts []string, rules map[string][]string) builder.RouterConfi
 		}
 	}
 	return builder.RouterConfig{Rules: ruleList}
+}
+
+// pipelinesFor 为每条 route 生成相同的 filter 名单（names 为空时得到显式空链），
+// 模拟 Compile 产出的运行态 Pipelines。
+func pipelinesFor(router builder.RouterConfig, names ...string) map[string][]string {
+	pipelines := make(map[string][]string, len(router.Rules))
+	for _, rule := range router.Rules {
+		pipelines[rule.ID] = append([]string(nil), names...)
+	}
+	return pipelines
 }
 
 // defaultTestTransformerConfig 返回一份启用了模拟帧 transformer 的运行态配置，

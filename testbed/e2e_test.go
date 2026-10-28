@@ -15,6 +15,7 @@ func TestEchoConcurrentLimit(t *testing.T) {
 
 	// 配置：连接级限流上限 2，独立端口避免与既有用例冲突
 	const gatewayAddr = "127.0.0.1:9998"
+	router := routerConfig(nil, map[string][]string{"testBackend": {"/"}})
 	cfg := &builder.Config{
 		Connector: builder.ConnectorConfig{
 			Port: "9998",
@@ -24,7 +25,8 @@ func TestEchoConcurrentLimit(t *testing.T) {
 		},
 		Handler: builder.HandlerConfig{
 			Filter: builder.HTTPFilterConfig{
-				Filters: []any{routerConfig(nil, map[string][]string{"testBackend": {"/"}})},
+				Router:    router,
+				Pipelines: pipelinesFor(router),
 			},
 		},
 		Backend: backendConfig(map[string][]string{"testBackend": {backendAddr}}),
@@ -80,13 +82,15 @@ func TestEchoConcurrentLimit(t *testing.T) {
 func TestEchoEndToEnd(t *testing.T) {
 	backendAddr := startEchoBackend(t)
 
+	router := routerConfig(nil, map[string][]string{"testBackend": {"/"}})
 	cfg := &builder.Config{
 		Connector: builder.ConnectorConfig{
 			Port: "9999",
 		},
 		Handler: builder.HandlerConfig{
 			Filter: builder.HTTPFilterConfig{
-				Filters: []any{routerConfig(nil, map[string][]string{"testBackend": {"/"}})},
+				Router:    router,
+				Pipelines: pipelinesFor(router),
 			},
 		},
 		Backend: backendConfig(map[string][]string{"testBackend": {backendAddr}}),

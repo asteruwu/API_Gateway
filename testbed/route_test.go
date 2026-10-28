@@ -55,14 +55,16 @@ func TestRouteDispatch(t *testing.T) {
 	svcB := startFixedBackend(t, []byte("resp-from-svcB"))
 
 	const gatewayAddr = "127.0.0.1:9996"
+	router := routerConfig(nil, map[string][]string{
+		"svcA": {"/orders"},
+		"svcB": {"/users"},
+	})
 	cfg := &builder.Config{
 		Connector: builder.ConnectorConfig{Port: "9996"},
 		Handler: builder.HandlerConfig{
 			Filter: builder.HTTPFilterConfig{
-				Filters: []any{routerConfig(nil, map[string][]string{
-					"svcA": {"/orders"},
-					"svcB": {"/users"},
-				})},
+				Router:    router,
+				Pipelines: pipelinesFor(router),
 			},
 		},
 		Backend: backendConfig(map[string][]string{
@@ -107,14 +109,16 @@ func TestHostRouteDispatch(t *testing.T) {
 	svcB := startFixedBackend(t, []byte("resp-from-svcB"))
 
 	const gatewayAddr = "127.0.0.1:9995"
+	router := builder.RouterConfig{Rules: []builder.RouterRule{
+		{ID: "svcA#0", Hosts: []string{"api.shopA.com"}, PathPrefix: "/orders", Service: "svcA"},
+		{ID: "svcB#0", Hosts: []string{"api.shopB.com"}, PathPrefix: "/orders", Service: "svcB"},
+	}}
 	cfg := &builder.Config{
 		Connector: builder.ConnectorConfig{Port: "9995"},
 		Handler: builder.HandlerConfig{
 			Filter: builder.HTTPFilterConfig{
-				Filters: []any{builder.RouterConfig{Rules: []builder.RouterRule{
-					{Hosts: []string{"api.shopA.com"}, PathPrefix: "/orders", Service: "svcA"},
-					{Hosts: []string{"api.shopB.com"}, PathPrefix: "/orders", Service: "svcB"},
-				}}},
+				Router:    router,
+				Pipelines: pipelinesFor(router),
 			},
 		},
 		Backend: backendConfig(map[string][]string{"svcA": {svcA}, "svcB": {svcB}}),

@@ -87,27 +87,31 @@ func TestAuthEndToEnd(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = fb.Close() })
 
-	// Router 在前写入 RouteID，AuthFilter 按 RouteID 查策略（顺序不可颠倒）
+	// Router 先写 RouteID，pipeline 按 RouteID 执行 auth，auth 再按 RouteID 查策略
 	const gatewayAddr = "127.0.0.1:9993"
+	router := builder.RouterConfig{Rules: []builder.RouterRule{
+		{ID: "public#0", PathPrefix: "/public", Service: "svc"},
+		{ID: "orders#0", PathPrefix: "/orders", Service: "svc"},
+		{ID: "admin#0", PathPrefix: "/admin", Service: "svc"},
+	}}
 	cfg := &builder.Config{
 		Connector: builder.ConnectorConfig{Port: "9993"},
 		Handler: builder.HandlerConfig{
-			Filter: builder.HTTPFilterConfig{Filters: []any{
-				builder.RouterConfig{Rules: []builder.RouterRule{
-					{ID: "public#0", PathPrefix: "/public", Service: "svc"},
-					{ID: "orders#0", PathPrefix: "/orders", Service: "svc"},
-					{ID: "admin#0", PathPrefix: "/admin", Service: "svc"},
-				}},
-				builder.AuthFilterConfig{
-					Credentials: []string{"bearer"},
-					JWT:         builder.JWTVerifierConfig{SecretEnv: authTestSecretEnv},
-					Policies: map[string]builder.AuthPolicy{
-						"public#0": {Public: true},
-						"orders#0": {Credential: "bearer"},
-						"admin#0":  {Credential: "bearer", Roles: []string{"admin"}},
+			Filter: builder.HTTPFilterConfig{
+				Router: router,
+				Configs: map[string]any{
+					"auth": builder.AuthFilterConfig{
+						Credentials: []string{"bearer"},
+						JWT:         builder.JWTVerifierConfig{SecretEnv: authTestSecretEnv},
+						Policies: map[string]builder.AuthPolicy{
+							"public#0": {Public: true},
+							"orders#0": {Credential: "bearer"},
+							"admin#0":  {Credential: "bearer", Roles: []string{"admin"}},
+						},
 					},
 				},
-			}},
+				Pipelines: pipelinesFor(router, "auth"),
+			},
 		},
 		Backend: backendConfig(map[string][]string{"svc": {fb.RealAddr()}}),
 	}

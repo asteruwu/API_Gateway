@@ -93,6 +93,9 @@ var (
 	// ErrTransform 请求协议转换失败
 	ErrTransform = errors.New("handler: transform request failed")
 
+	// ErrPipelineNotFound 路由命中但运行态没有对应 pipeline（配置不一致），fail-closed
+	ErrPipelineNotFound = errors.New("handler: route pipeline not found")
+
 	// ErrRestore 响应协议还原失败
 	ErrRestore = errors.New("handler: restore response failed")
 
