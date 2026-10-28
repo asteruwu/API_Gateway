@@ -32,7 +32,6 @@ type HandlerConfig struct {
 }
 
 type HTTPFilterConfig struct {
-	Filters   []any
 	Router    RouterConfig
 	Configs   map[string]any
 	Pipelines map[string][]string

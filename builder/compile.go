@@ -37,7 +37,6 @@ func Compile(gw GatewayConfig, plan *Plan) (*Config, error) {
 			Decoder: gw.Decoder,
 			Encoder: gw.Encoder,
 			Filter: HTTPFilterConfig{
-				Filters:   legacyFilterList(router, gw.HTTPFilters.Enabled, httpFilters),
 				Router:    router,
 				Configs:   httpFilters,
 				Pipelines: pipelines,
@@ -92,16 +91,6 @@ func attachAuthPolicies(configs map[string]any, policies map[string]AuthPolicy) 
 		cfg.Policies = policies
 		configs[name] = cfg
 	}
-}
-
-// legacyFilterList 过渡期产出旧链：Router 前置 + enabled 顺序，handler 切换后删除
-func legacyFilterList(router RouterConfig, enabled []string, configs map[string]any) []any {
-	list := make([]any, 0, len(enabled)+1)
-	list = append(list, router)
-	for _, name := range enabled {
-		list = append(list, configs[name])
-	}
-	return list
 }
 
 // buildTransformerEntries 把「已启用配置」与「service 分组」合成运行态注册表

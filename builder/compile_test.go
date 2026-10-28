@@ -78,15 +78,8 @@ func TestCompileSuccess(t *testing.T) {
 		}
 	}
 
-	// 路由规则应作为第一个 http filter 插入，且 service 名已限定
-	filters := cfg.Handler.Filter.Filters
-	if len(filters) == 0 {
-		t.Fatalf("expected router config prepended to http filters")
-	}
-	routerCfg, ok := filters[0].(RouterConfig)
-	if !ok {
-		t.Fatalf("first http filter = %T, want RouterConfig", filters[0])
-	}
+	// 路由规则装配进独立的 Router 字段，且 service 名已限定
+	routerCfg := cfg.Handler.Filter.Router
 	if len(routerCfg.Rules) != 2 {
 		t.Fatalf("router rules = %+v, want 2 rules", routerCfg.Rules)
 	}
@@ -218,7 +211,7 @@ func TestCompileOnlyEnabledSelected(t *testing.T) {
 }
 
 func TestCompileHTTPSelectedWithRouter(t *testing.T) {
-	// http_filters 同理，且 compile 自动派生的 Router 始终排在最前
+	// http_filters 同理：只有 enabled 里的名字进入 Configs，Router 独立装配
 	gw := GatewayConfig{
 		HTTPFilters: PluginActivation{Enabled: []string{"testF"}},
 		Plugins: PluginsConfig{HTTP: map[string]any{
@@ -229,13 +222,6 @@ func TestCompileHTTPSelectedWithRouter(t *testing.T) {
 	cfg, err := compileForTest(gw, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
-	}
-	filters := cfg.Handler.Filter.Filters
-	if len(filters) != 2 {
-		t.Fatalf("http filters = %+v, want [router, testF]", filters)
-	}
-	if _, ok := filters[0].(RouterConfig); !ok {
-		t.Errorf("first http filter = %T, want RouterConfig", filters[0])
 	}
 	configs := cfg.Handler.Filter.Configs
 	if len(configs) != 1 {
@@ -392,12 +378,12 @@ func authPlatforms() []PlatformConfig {
 // authConfigOf 从编译产物里取出 auth filter 的运行态配置
 func authConfigOf(t *testing.T, cfg *Config) AuthFilterConfig {
 	t.Helper()
-	for _, f := range cfg.Handler.Filter.Filters {
+	for _, f := range cfg.Handler.Filter.Configs {
 		if ac, ok := f.(AuthFilterConfig); ok {
 			return ac
 		}
 	}
-	t.Fatalf("auth filter config not found in %+v", cfg.Handler.Filter.Filters)
+	t.Fatalf("auth filter config not found in %+v", cfg.Handler.Filter.Configs)
 	return AuthFilterConfig{}
 }
 
@@ -409,10 +395,7 @@ func TestCompileRouteIDsAndAuthPolicies(t *testing.T) {
 		t.Fatalf("unexpected err: %v", err)
 	}
 
-	routerCfg, ok := cfg.Handler.Filter.Filters[0].(RouterConfig)
-	if !ok {
-		t.Fatalf("first filter = %T, want RouterConfig", cfg.Handler.Filter.Filters[0])
-	}
+	routerCfg := cfg.Handler.Filter.Router
 	if len(routerCfg.Rules) != 2 {
 		t.Fatalf("router rules = %+v, want 2", routerCfg.Rules)
 	}
@@ -858,10 +841,6 @@ func TestCompileAuthReferencedOnlyByRoute(t *testing.T) {
 	}
 	if _, ok := cfg.Handler.Filter.Configs["auth"].(AuthFilterConfig); !ok {
 		t.Errorf("configs[auth] = %T, want AuthFilterConfig", cfg.Handler.Filter.Configs["auth"])
-	}
-	// enabled 为空，过渡期旧链里只剩 Router
-	if len(cfg.Handler.Filter.Filters) != 1 {
-		t.Errorf("legacy filters = %+v, want only router", cfg.Handler.Filter.Filters)
 	}
 }
 
