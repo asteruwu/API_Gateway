@@ -18,10 +18,17 @@ type ServiceConfig struct {
 }
 
 type RouteRuleConfig struct {
-	PathPrefix string           `yaml:"path_prefix"`
-	Methods    []string         `yaml:"methods"`
-	Filters    []string         `yaml:"filters"`
-	Auth       *RouteAuthConfig `yaml:"auth"`
+	PathPrefix string                `yaml:"path_prefix"`
+	Methods    []string              `yaml:"methods"`
+	Filters    []string              `yaml:"filters"`
+	Auth       *RouteAuthConfig      `yaml:"auth"`
+	RateLimit  *RouteRateLimitConfig `yaml:"rate_limit"`
+}
+
+type RouteRateLimitConfig struct {
+	Dimension string  `yaml:"dimension"`
+	QPS       float64 `yaml:"qps"`
+	Burst     int     `yaml:"burst"`
 }
 
 type RouteAuthConfig struct {

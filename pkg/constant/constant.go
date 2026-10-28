@@ -54,6 +54,14 @@ const AuthAlgorithmHS256 = "HS256"
 // AuthMinHS256SecretLen HS256 密钥最短字节数，RFC 7518 3.2 要求不短于哈希输出长度
 const AuthMinHS256SecretLen = 32
 
+// ===== rate limit =====
+
+// RateLimitDimension 限流维度，对应一种 Limiter 实现
+type RateLimitDimension string
+
+// RateLimitByRoute 按路由维度限流
+const RateLimitByRoute RateLimitDimension = "route"
+
 // ===== backend 后端层 =====
 
 // DefaultPoolMaxConn 连接池全局最大连接数（idle + active）

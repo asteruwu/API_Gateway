@@ -26,6 +26,7 @@ func ValidateWriting(gw GatewayConfig, platforms []PlatformConfig, plan *Plan) e
 	errs = append(errs, validateRouteIDs(plan)...)
 	errs = append(errs, validateRouteConflicts(plan)...)
 	errs = append(errs, validateRouteAuthDeclarations(platforms, plan)...)
+	errs = append(errs, validateRouteRateLimitDeclarations(platforms, plan)...)
 	errs = append(errs, validatePluginReferences(gw, plan)...)
 	errs = append(errs, validateEnabledUniqueness(gw)...)
 	errs = append(errs, validatePoolConfig(gw.Pool)...)
@@ -190,9 +191,9 @@ func validateRouteConflicts(plan *Plan) []error {
 // pipeline 含 auth ⇔ 声明了 auth 块；两边都有时再校验声明自身。
 func validateRouteAuthDeclarations(platforms []PlatformConfig, plan *Plan) []error {
 	var errs []error
-	byID := make(map[string]*PlannedRoute, len(plan.Routes))
+	routeTable := make(map[string]*PlannedRoute, len(plan.Routes))
 	for i := range plan.Routes {
-		byID[plan.Routes[i].Rule.ID] = &plan.Routes[i]
+		routeTable[plan.Routes[i].Rule.ID] = &plan.Routes[i]
 	}
 
 	for _, p := range platforms {
@@ -200,7 +201,7 @@ func validateRouteAuthDeclarations(platforms []PlatformConfig, plan *Plan) []err
 			service := qualifiedServiceName(p.Name, s.Name)
 			for i, r := range s.Routes {
 				where := fmt.Sprintf("platform %q service %q route[%d]", p.Name, s.Name, i)
-				pr, ok := byID[routeID(service, i)]
+				pr, ok := routeTable[routeID(service, i)]
 				if !ok {
 					errs = append(errs, fmt.Errorf("%w: %s missing from plan", gerrors.ErrInvalidConfig, where))
 					continue
@@ -244,6 +245,37 @@ func validateAuthDeclaration(where string, auth RouteAuthConfig) []error {
 			gerrors.ErrInvalidAuthConfig, where)}
 	}
 	return nil
+}
+
+// validateRouteRateLimitDeclarations 校验声明了限流参数的 route 必须在 pipeline 中启用 rate_limit
+func validateRouteRateLimitDeclarations(platforms []PlatformConfig, plan *Plan) []error {
+	var errs []error
+	routeTable := make(map[string]*PlannedRoute, len(plan.Routes))
+	for i := range plan.Routes {
+		routeTable[plan.Routes[i].Rule.ID] = &plan.Routes[i]
+	}
+
+	for _, p := range platforms {
+		for _, s := range p.Service {
+			service := qualifiedServiceName(p.Name, s.Name)
+			for i, r := range s.Routes {
+				where := fmt.Sprintf("platform %q service %q route[%d]", p.Name, s.Name, i)
+				pr, ok := routeTable[routeID(service, i)]
+				if !ok {
+					errs = append(errs, fmt.Errorf("%w: %s missing from plan", gerrors.ErrInvalidConfig, where))
+					continue
+				}
+				if r.RateLimit == nil {
+					continue
+				}
+				if !slices.Contains(pr.Pipeline, "rate_limit") {
+					errs = append(errs, fmt.Errorf("%w: %s declares rate_limit but pipeline does not contain %q",
+						gerrors.ErrInvalidRateLimitConfig, where, "rate_limit"))
+				}
+			}
+		}
+	}
+	return errs
 }
 
 // validatePluginReferences 校验 enabled / route 引用的插件名在注册表中存在，

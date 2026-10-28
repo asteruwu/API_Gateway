@@ -26,6 +26,7 @@ func Compile(gw GatewayConfig, plan *Plan) (*Config, error) {
 	rules, pipelines, policies := assembleRoutes(plan.Routes)
 	services, servicesByTransformer := buildServiceTables(plan.Services)
 	attachAuthPolicies(httpFilters, policies)
+	attachRateLimitRules(httpFilters, plan.Routes)
 	router := RouterConfig{Rules: rules}
 
 	return &Config{
@@ -89,6 +90,24 @@ func attachAuthPolicies(configs map[string]any, policies map[string]AuthPolicy) 
 			continue
 		}
 		cfg.Policies = policies
+		configs[name] = cfg
+	}
+}
+
+// attachRateLimitRules 把按 RouteID 聚合的限流规则装进 rate_limit filter 配置
+func attachRateLimitRules(configs map[string]any, routes []PlannedRoute) {
+	rules := make(map[string]RateLimitRule)
+	for _, r := range routes {
+		if r.RateLimit != nil {
+			rules[r.Rule.ID] = *r.RateLimit
+		}
+	}
+	for name, c := range configs {
+		cfg, ok := c.(RateLimitFilterConfig)
+		if !ok {
+			continue
+		}
+		cfg.Rules = rules
 		configs[name] = cfg
 	}
 }

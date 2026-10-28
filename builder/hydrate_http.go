@@ -4,11 +4,29 @@ import (
 	"fmt"
 	"time"
 
+	gconst "API_Gateway/pkg/constant"
 	"API_Gateway/pkg/tools"
 )
 
 var httpFilterHydrators = map[string]pluginHydrator{
-	"auth": hydrateAuth,
+	"auth":       hydrateAuth,
+	"rate_limit": hydrateRateLimit,
+}
+
+func hydrateRateLimit(raw any) (any, error) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("expected map, got %T", raw)
+	}
+	names, ok := tools.ToStrings(m["limiters"])
+	if !ok {
+		return nil, fmt.Errorf("limiters: expected string list")
+	}
+	limiters := make([]gconst.RateLimitDimension, 0, len(names))
+	for _, name := range names {
+		limiters = append(limiters, gconst.RateLimitDimension(name))
+	}
+	return RateLimitFilterConfig{Limiters: limiters}, nil
 }
 
 func hydrateAuth(raw any) (any, error) {

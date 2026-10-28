@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	gconst "API_Gateway/pkg/constant"
 	gerrors "API_Gateway/pkg/errors"
 )
 
@@ -68,6 +69,84 @@ func TestHydrateEnabledWithoutConfig(t *testing.T) {
 	err := Hydrate(&gw, gw.HTTPFilters.Enabled)
 	if !errors.Is(err, gerrors.ErrFilterConfigNotFound) {
 		t.Errorf("err = %v, want %v", err, gerrors.ErrFilterConfigNotFound)
+	}
+}
+
+// TestHydrateRateLimitValid rate_limit 正常水合 limiters 列表
+func TestHydrateRateLimitValid(t *testing.T) {
+	gw := GatewayConfig{
+		HTTPFilters: PluginActivation{Enabled: []string{"rate_limit"}},
+		Plugins: PluginsConfig{HTTP: map[string]any{
+			"rate_limit": map[string]any{"limiters": []any{"route"}},
+		}},
+	}
+
+	if err := Hydrate(&gw, gw.HTTPFilters.Enabled); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	cfg, ok := gw.Plugins.HTTP["rate_limit"].(RateLimitFilterConfig)
+	if !ok {
+		t.Fatalf("config = %T, want RateLimitFilterConfig", gw.Plugins.HTTP["rate_limit"])
+	}
+	if len(cfg.Limiters) != 1 || cfg.Limiters[0] != gconst.RateLimitByRoute {
+		t.Errorf("limiters = %v, want [route]", cfg.Limiters)
+	}
+}
+
+// TestHydrateRateLimitTypeMismatch rate_limit 只负责类型转换，不校验语义
+func TestHydrateRateLimitTypeMismatch(t *testing.T) {
+	cases := map[string]any{
+		"nil":                 nil,
+		"wrong type":          "nope",
+		"missing limiters":    map[string]any{},
+		"limiters wrong type": map[string]any{"limiters": "route"},
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			gw := GatewayConfig{
+				HTTPFilters: PluginActivation{Enabled: []string{"rate_limit"}},
+				Plugins:     PluginsConfig{HTTP: map[string]any{"rate_limit": raw}},
+			}
+			err := Hydrate(&gw, gw.HTTPFilters.Enabled)
+			if !errors.Is(err, gerrors.ErrInvalidConfig) {
+				t.Errorf("err = %v, want wrapping %v", err, gerrors.ErrInvalidConfig)
+			}
+		})
+	}
+}
+
+// TestHydrateRateLimitKeepsDeclarations 支持性、重复与空集合属于后续校验，hydrate 原样保留
+func TestHydrateRateLimitKeepsDeclarations(t *testing.T) {
+	cases := map[string][]any{
+		"duplicate":   {"route", "route"},
+		"unsupported": {"ip"},
+		"empty":       {},
+	}
+	for name, names := range cases {
+		t.Run(name, func(t *testing.T) {
+			gw := GatewayConfig{
+				HTTPFilters: PluginActivation{Enabled: []string{"rate_limit"}},
+				Plugins: PluginsConfig{HTTP: map[string]any{
+					"rate_limit": map[string]any{"limiters": names},
+				}},
+			}
+			if err := Hydrate(&gw, gw.HTTPFilters.Enabled); err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			cfg, ok := gw.Plugins.HTTP["rate_limit"].(RateLimitFilterConfig)
+			if !ok {
+				t.Fatalf("config = %T, want RateLimitFilterConfig", gw.Plugins.HTTP["rate_limit"])
+			}
+			if len(cfg.Limiters) != len(names) {
+				t.Fatalf("limiters = %v, want %v", cfg.Limiters, names)
+			}
+			for i, name := range names {
+				want := gconst.RateLimitDimension(name.(string))
+				if cfg.Limiters[i] != want {
+					t.Errorf("limiters[%d] = %q, want %q", i, cfg.Limiters[i], want)
+				}
+			}
+		})
 	}
 }
 

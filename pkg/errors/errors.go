@@ -36,6 +36,9 @@ var (
 
 	// ErrInvalidAuthConfig 鉴权配置非法，或路由鉴权声明与 auth 插件启用状态不一致
 	ErrInvalidAuthConfig = errors.New("builder: invalid auth config")
+
+	// ErrInvalidRateLimitConfig 限流配置非法，或路由限流声明与 rate_limit 插件启用状态不一致
+	ErrInvalidRateLimitConfig = errors.New("builder: invalid rate limit config")
 )
 
 // connector errors

@@ -3,6 +3,8 @@ package builder
 import (
 	"slices"
 	"testing"
+
+	gconst "API_Gateway/pkg/constant"
 )
 
 func calcPlatforms(routes ...[]string) []PlatformConfig {
@@ -131,6 +133,52 @@ func TestCalculateFlattensPlan(t *testing.T) {
 		if len(got.Instances) != 1 || got.Instances[0].Addr != want.addr {
 			t.Errorf("services[%d].Instances = %+v, want addr %q", i, got.Instances, want.addr)
 		}
+	}
+}
+
+// TestCalculateFlattensRateLimit 校验 route 限流参数展平、维度默认值与缺省区分
+func TestCalculateFlattensRateLimit(t *testing.T) {
+	platforms := []PlatformConfig{{
+		Name: "shopA",
+		Service: []ServiceConfig{{
+			Name: "order",
+			Routes: []RouteRuleConfig{
+				{PathPrefix: "/default", RateLimit: &RouteRateLimitConfig{QPS: 10, Burst: 20}},
+				{PathPrefix: "/ip", RateLimit: &RouteRateLimitConfig{Dimension: "ip", QPS: 0.5, Burst: 1}},
+				{PathPrefix: "/none"},
+			},
+		}},
+	}}
+
+	plan := Calculate(GatewayConfig{}, platforms)
+	if len(plan.Routes) != 3 {
+		t.Fatalf("routes = %d, want 3", len(plan.Routes))
+	}
+
+	defaultRule := plan.Routes[0].RateLimit
+	if defaultRule == nil {
+		t.Fatal("default route rate limit = nil, want rule")
+	}
+	if defaultRule.Dimension != gconst.RateLimitByRoute {
+		t.Errorf("default dimension = %q, want %q", defaultRule.Dimension, gconst.RateLimitByRoute)
+	}
+	if defaultRule.Params.QPS != 10 || defaultRule.Params.Burst != 20 {
+		t.Errorf("default params = %+v, want qps 10 burst 20", defaultRule.Params)
+	}
+
+	ipRule := plan.Routes[1].RateLimit
+	if ipRule == nil {
+		t.Fatal("ip route rate limit = nil, want rule")
+	}
+	if ipRule.Dimension != gconst.RateLimitDimension("ip") {
+		t.Errorf("ip dimension = %q, want ip", ipRule.Dimension)
+	}
+	if ipRule.Params.QPS != 0.5 || ipRule.Params.Burst != 1 {
+		t.Errorf("ip params = %+v, want qps 0.5 burst 1", ipRule.Params)
+	}
+
+	if plan.Routes[2].RateLimit != nil {
+		t.Errorf("route without rate limit = %+v, want nil", plan.Routes[2].RateLimit)
 	}
 }
 

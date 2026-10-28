@@ -1,6 +1,10 @@
 package builder
 
-import "time"
+import (
+	"time"
+
+	gconst "API_Gateway/pkg/constant"
+)
 
 // 运行态配置
 
@@ -67,6 +71,21 @@ type AuthPolicy struct {
 	Credential string
 	Roles      []string
 	Scopes     []string
+}
+
+type RateLimitFilterConfig struct {
+	Limiters []gconst.RateLimitDimension
+	Rules    map[string]RateLimitRule
+}
+
+type RateLimitRule struct {
+	Dimension gconst.RateLimitDimension
+	Params    RateLimitParams
+}
+
+type RateLimitParams struct {
+	QPS   float64
+	Burst int
 }
 
 type TransformerConfig struct {

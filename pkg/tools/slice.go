@@ -28,10 +28,10 @@ func StringsContain(list []string, v string) bool {
 }
 
 // DuplicateStrings 返回 names 中重复出现的值，按首次重复出现的顺序去重
-func DuplicateStrings(names []string) []string {
-	seen := make(map[string]bool, len(names))
-	duplicated := make(map[string]bool)
-	out := make([]string, 0)
+func DuplicateStrings[T ~string](names []T) []T {
+	seen := make(map[T]bool, len(names))
+	duplicated := make(map[T]bool)
+	out := make([]T, 0)
 	for _, name := range names {
 		if !seen[name] {
 			seen[name] = true

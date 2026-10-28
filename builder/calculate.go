@@ -3,6 +3,7 @@ package builder
 import (
 	"strconv"
 
+	gconst "API_Gateway/pkg/constant"
 	"API_Gateway/pkg/tools"
 )
 
@@ -13,9 +14,10 @@ type Plan struct {
 }
 
 type PlannedRoute struct {
-	Rule     RouterRule
-	Pipeline []string
-	Policy   AuthPolicy
+	Rule      RouterRule
+	Pipeline  []string
+	Policy    AuthPolicy
+	RateLimit *RateLimitRule
 }
 
 type PlannedService struct {
@@ -53,9 +55,10 @@ func collectPlanData(enabled []string, platforms []PlatformConfig) (httpFilters 
 			for i, r := range s.Routes {
 				names = append(names, r.Filters...)
 				routes = append(routes, PlannedRoute{
-					Rule:     flattenRoute(service, p.Host, r, i),
-					Pipeline: tools.CloneOrDefault(r.Filters, enabled),
-					Policy:   flattenAuthPolicy(r.Auth),
+					Rule:      flattenRoute(service, p.Host, r, i),
+					Pipeline:  tools.CloneOrDefault(r.Filters, enabled),
+					Policy:    flattenAuthPolicy(r.Auth),
+					RateLimit: flattenRateLimit(r.RateLimit),
 				})
 			}
 		}
@@ -92,5 +95,19 @@ func flattenAuthPolicy(auth *RouteAuthConfig) AuthPolicy {
 		Credential: auth.Credential,
 		Roles:      append([]string(nil), auth.Require.Roles...),
 		Scopes:     append([]string(nil), auth.Require.Scopes...),
+	}
+}
+
+func flattenRateLimit(cfg *RouteRateLimitConfig) *RateLimitRule {
+	if cfg == nil {
+		return nil
+	}
+	dimension := gconst.RateLimitDimension(cfg.Dimension)
+	if dimension == "" {
+		dimension = gconst.RateLimitByRoute
+	}
+	return &RateLimitRule{
+		Dimension: dimension,
+		Params:    RateLimitParams{QPS: cfg.QPS, Burst: cfg.Burst},
 	}
 }
