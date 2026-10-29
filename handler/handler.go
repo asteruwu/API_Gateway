@@ -4,6 +4,7 @@ import (
 	"API_Gateway/builder"
 	hf "API_Gateway/handler/http_filter"
 	"API_Gateway/handler/http_filter/auth"
+	"API_Gateway/handler/http_filter/ratelimit"
 	"API_Gateway/handler/message"
 	"API_Gateway/handler/transformer"
 	gconst "API_Gateway/pkg/constant"
@@ -166,6 +167,13 @@ func buildFilter(cfg builder.HTTPFilterConfig) (*hf.Router, map[string]hf.HTTPFi
 				return nil, nil, err
 			}
 			table[name] = authFilter
+		case builder.RateLimitFilterConfig:
+			rateLimiter, err := ratelimit.NewRateLimiter(filter)
+			if err != nil {
+				log.Printf("[handler]failed to initialize rate limit filter: %s", err.Error())
+				return nil, nil, fmt.Errorf("%w: %v", gerrors.ErrInitializeHTTPFiltersFailed, err)
+			}
+			table[name] = rateLimiter
 		default:
 			log.Printf("[handler]failed to initialize http filter %q, unsupported config type %T", name, raw)
 			return nil, nil, gerrors.ErrInitializeHTTPFiltersFailed
@@ -277,6 +285,8 @@ func ErrorResponse(err error, partial *message.Response) *message.Response {
 	case errors.Is(err, gerrors.ErrForbidden),
 		errors.Is(err, gerrors.ErrHTTPFilterReject):
 		status = http.StatusForbidden
+	case errors.Is(err, gerrors.ErrRateLimited):
+		status = http.StatusTooManyRequests
 	case errors.Is(err, gerrors.ErrRouteNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, gerrors.ErrServiceNotFound),

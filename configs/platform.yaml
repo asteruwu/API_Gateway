@@ -11,17 +11,23 @@ platforms:
         routes:
           - path_prefix: /orders
             methods: [POST, PUT]
-            filters: [auth]
+            filters: [auth, rate_limit]
             auth:
               credential: bearer
               require:
                 roles: [buyer]
+            rate_limit:
+              qps: 10
+              burst: 20
           - path_prefix: /orders/refund
             auth:
               credential: bearer
               require:
                 roles: [support]
                 scopes: [orders:refund]
+            rate_limit:
+              qps: 5
+              burst: 10
       - name: user
         transformer: testT
         instances:

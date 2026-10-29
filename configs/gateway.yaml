@@ -13,6 +13,9 @@ gateway:
           issuer: https://idp.example.com
           audience: gateway
           leeway: 30s
+      rate_limit:
+        limiters:
+          - route
     transformer:
       testT: {}
   tcp_filters:
@@ -21,6 +24,7 @@ gateway:
   http_filters:
     enabled:
       - auth
+      - rate_limit
   decoder:
     max_body: 4096
   encoder: {}

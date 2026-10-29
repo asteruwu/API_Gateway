@@ -87,6 +87,9 @@ var (
 	// ErrForbidden 已认证但缺少访问该资源所需的授权（角色/权限不足）
 	ErrForbidden = errors.New("handler: request forbidden")
 
+	// ErrRateLimited 请求超过限流配额
+	ErrRateLimited = errors.New("handler: request rate limited")
+
 	// ErrEncodeResponse 响应编码失败
 	ErrEncodeResponse = errors.New("handler: encode response failed")
 
