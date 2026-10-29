@@ -62,6 +62,9 @@ type RateLimitDimension string
 // RateLimitByRoute 按路由维度限流
 const RateLimitByRoute RateLimitDimension = "route"
 
+// RateLimitMaxRetryAfter 限流拒绝时 Retry-After 的最大时长
+const RateLimitMaxRetryAfter = time.Duration(1<<63 - 1)
+
 // ===== backend 后端层 =====
 
 // DefaultPoolMaxConn 连接池全局最大连接数（idle + active）
