@@ -67,6 +67,12 @@ const RateLimitMaxRetryAfter = time.Duration(1<<63 - 1)
 
 // ===== backend 后端层 =====
 
+// LBPolicyRoundRobin 轮询负载均衡算法
+const LBPolicyRoundRobin = "round_robin"
+
+// DefaultLBPolicy 未配置负载均衡算法时的默认值
+const DefaultLBPolicy = LBPolicyRoundRobin
+
 // DefaultPoolMaxConn 连接池全局最大连接数（idle + active）
 const DefaultPoolMaxConn = 64
 

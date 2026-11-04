@@ -23,6 +23,7 @@ type PlannedRoute struct {
 type PlannedService struct {
 	Name        string
 	Transformer string
+	LB          string
 	Instances   []InstanceConfig
 }
 
@@ -49,6 +50,7 @@ func collectPlanData(enabled []string, platforms []PlatformConfig) (httpFilters 
 			services = append(services, PlannedService{
 				Name:        service,
 				Transformer: s.Transformer,
+				LB:          flattenLBPolicy(s.LB),
 				Instances:   append([]InstanceConfig(nil), s.Instances...),
 			})
 
@@ -84,6 +86,13 @@ func flattenRoute(service string, hosts []string, route RouteRuleConfig, idx int
 		Methods:    append([]string(nil), route.Methods...),
 		Service:    service,
 	}
+}
+
+func flattenLBPolicy(policy string) string {
+	if policy == "" {
+		return gconst.DefaultLBPolicy
+	}
+	return policy
 }
 
 func flattenAuthPolicy(auth *RouteAuthConfig) AuthPolicy {

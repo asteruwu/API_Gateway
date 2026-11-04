@@ -74,7 +74,7 @@ func buildServiceTables(services []PlannedService) ([]ServiceRef, map[string][]s
 	for _, s := range services {
 		instances := make([]InstanceConfig, len(s.Instances))
 		copy(instances, s.Instances)
-		refs = append(refs, ServiceRef{Name: s.Name, Instances: instances})
+		refs = append(refs, ServiceRef{Name: s.Name, LB: s.LB, Instances: instances})
 		if s.Transformer != "" {
 			byTransformer[s.Transformer] = append(byTransformer[s.Transformer], s.Name)
 		}

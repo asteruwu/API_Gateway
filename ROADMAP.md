@@ -50,16 +50,16 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 完成完�
 
 ## 当前状态
 
-> 最后更新：2026-10-27。
+> 最后更新：2026-11-04。
 
-- **已完成**：v00–v07（路由/配置链路、连接池、release 回调、帧定界 transformer、鉴权 filter）。全部包与接口已就位，`go build ./...`、`go vet ./...`、`go test ./... -race` 通过。
-- **进行中**：v08，阶段 A–C 完成，下一步 D（HTTP 限流 filter）。
+- **已完成**：v00–v07；v08 A–D（插件注册表、route pipeline、按 `RouteID` 执行、HTTP 限流 filter）。全部包与接口已就位，`go build ./...`、`go vet ./...`、`go test ./... -race` 通过。
+- **当前阶段**：v08 E，服务级负载均衡（未开始）；完成后进入 F，服务健康探测（设计与实现另开文档）。
 - **Build 链路**：`Load → Calculate（单次 Plan）→ ValidateWriting → Hydrate → ValidateRuntime → Compile(gw, plan)`。
 - **职责划分**：`Calculate` 产出统一 `Plan`；`Compile` 只做装配。
 - **handler 执行**：已切换为按 `RouteID` 取 pipeline，旧 `Filters` 已删除。
-- **尚未接线**：`Call` 写死 `instances[0]`；transformer 帧协议为长度前缀的**模拟协议**，非真实 gRPC/MCP；v07 认证仅 HS256 + 单一静态密钥。
+- **尚未接线**：`BManager.Call` 写死 `instances[0]`，由 E 处理；transformer 帧协议为长度前缀的**模拟协议**，非真实 gRPC/MCP；v07 认证仅 HS256 + 单一静态密钥。
 
-多凭证、多 IdP、JWKS、RS256、有状态 verifier 均未做，见「已知待办 · 未定版本」。
+多凭证、多 IdP、JWKS、RS256、有状态 verifier 均未做，见「已知待办 · 未定版本」。服务健康探测的详细设计不写入本文件，阶段 F 只保留入口与出口。
 
 ## 版本变更
 
@@ -108,6 +108,13 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 完成完�
 - **缺失语义**：pipeline 缺失 = `ErrPipelineNotFound`（fail-closed）。
 - **清理**：旧 `HTTPFilterConfig.Filters` 字段及其填充代码已删除。
 
+### v08 D 阶段
+
+- **配置与 Plan**：route 级 `rate_limit`、运行态限流配置、`Calculate` 展平。
+- **校验与编译**：声明与参数校验，`Compile` 聚合 `RouteID` 规则表。
+- **运行态**：`TokenBucket` + `RouteLimiter` + `RateLimiter` 分发；429 + `Retry-After`。
+- **测试与样例**：bucket / limiter / filter 单测，配置样例与 `config_test`。
+
 ## 里程碑一览
 
 | 版本 | 里程碑 | 新增能力 |
@@ -120,7 +127,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 完成完�
 | v05 | 路由能力 | router 真实实现，支持配置文件定义多条路由规则 |
 | v06 | 连接抽象 | ConnPool 落地 + 第一个 transformer 真实实现（比如先做 gRPC） |
 | v07 | 安全认证 | 鉴权 filter 真实逻辑（JWT 校验） |
-| v08 | 管道细化 | filter chain 可配置化（不同路由挂不同 filter 组合）+ HTTP 层精细限流 + 负载均衡 |
+| v08 | 管道细化 | filter chain 可配置化（不同路由挂不同 filter 组合）+ HTTP 层精细限流 + 服务级负载均衡 + 服务健康探测（另开文档） |
 | v09 | 协议扩展 | 第二个 transformer 实现（验证新增协议不改已有代码） |
 | v10 | 最终完善 | 错误处理统一、响应路径补全走查、代码整理，可运行版本 |
 
@@ -206,10 +213,14 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 完成完�
   - [x] 阶段 F（配置与文档）：`gateway.yaml` 启用 `auth` 并配 `credentials`/`jwt`；`platform.yaml` 逐条声明（含 `public: true` 示例）；新增 `builder/config_test.go` 校验示例配置。
   - [x] 安全加固 G1–G3（路由）：`path.Clean` 归一化、前缀段边界、Host 剥离端口 + 大小写不敏感。
   - [x] 安全加固 G4–G6（handler）：写响应设 write deadline（10s）；错误 body 改回 `http.StatusText`，内部细节只进日志；conn 包 `io.LimitedReader`（1MB）限制单请求读入量。
-- [ ] **v08 管道细化** —— 进行中，A–C 已完成，剩余 D/E/F。
+- [ ] **v08 管道细化** —— 进行中，A–D 已完成，剩余 E–G。
   - [x] 阶段 A：插件注册表按类别隔离。
   - [x] 阶段 B：route 级 pipeline 与单次 Plan，编译装配、校验和测试收口。
   - [x] 阶段 C：handler 按 RouteID 执行 pipeline，删除旧 `Filters` 字段。
+  - [x] 阶段 D：HTTP 限流 filter（route 维度、429 + `Retry-After`）。
+  - [ ] 阶段 E：服务级负载均衡。
+  - [ ] 阶段 F：服务健康探测（设计与实现另开文档）。
+  - [ ] 阶段 G：v08 验收与文档收口。
 - [ ] v09 协议扩展
 - [ ] v10 最终完善
 
@@ -217,7 +228,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 完成完�
 
 ```text
 clientConn → Decode → message.Request → filters
-           → next(service) → backendConn           （backend 借出连接）
+           → next(service) → 查表 → lb.Pick → 池借出 → backendConn
            → transformer.Transform(req, backendConn)（在后端连接上完成协议交互）
            → message.Response → Encode → clientConn.Write
 ```
@@ -238,6 +249,7 @@ clientConn → Decode → message.Request → filters
   - 这是「新增协议不改已有代码」的前提。
 - **路由与负载均衡两级映射**：filter 定「请求→服务」，backend 定「服务→实例」。
   - 拆开是为重试换实例时不重跑 filter 链，避免重复鉴权、重复扣配额。
+- **LB 与健康探测分离**：LB 只负责从候选实例中选择；健康状态由独立组件维护，作为候选过滤输入，不写进具体选择算法。
 - **一条 conn 一个 goroutine，filter 对象全局共享**：filter 内部状态须自保并发安全。
 - **连接池 / transformer 职责分离**
   - backend 只管连接生命周期（借出、归还、池化）。
@@ -252,6 +264,7 @@ clientConn → Decode → message.Request → filters
 ### v08 管道细化
 
 - 负载均衡：`BManager.Call` 写死 `instances[0]`，由阶段 E 处理。
+- 健康探测：设计与实现另开文档；本文件只保留阶段依赖，完成后回填阶段状态。
 
 ### v09 协议扩展
 
@@ -279,16 +292,24 @@ clientConn → Decode → message.Request → filters
 - **测试构造**：启动假后端 → 构造 `builder.Config` → 用构造函数组装网关；`main.go` 不被测试侵入。
 - **协议演进**：现为 4 字节长度前缀帧（模拟协议，fakebackend 与 transformer 对称实现）；接真实 gRPC/MCP 时替换实现。
 - **行为模式**：现做 `echo` + `fixed`；`error` / `delay` 等做到重试/熔断（v03/v06）时再加。
+- **健康探测**：故障注入模式与测试用例在独立文档中维护，不写入本文件。
 
-## v08 剩余工作（阶段 D–F）
+## v08 剩余工作（阶段 D–G）
 
-两条主线：**filter chain 可配置化**（不同路由执行不同 filter 组合）与 **HTTP 层精细限流**；同时接入负载均衡。
+v08 三条主线：**filter chain 可配置化**（已完成）、**HTTP 层精细限流**（已完成）、**服务级负载均衡**（下一步）。健康探测排在 LB 之后，设计与实现另开文档。
+
+| 阶段 | 主目标 | 状态 |
+|---|---|---|
+| D | HTTP 限流 filter | 已完成 |
+| E | 服务级负载均衡 | 未开始 |
+| F | 服务健康探测 | 未开始（另开文档） |
+| G | v08 验收与文档收口 | 未开始 |
 
 ### 目标
 
-1. 新增请求级限流 filter（按路由配额），与 v03 的连接级限流分层。
-2. `BManager.Call` 接入负载均衡，不再写死 `instances[0]`。
-3. 收口：testbed 覆盖新的 pipeline 与多实例分发，补配置样例。
+1. `BManager.Call` 接入负载均衡，不再写死 `instances[0]`。
+2. 服务健康探测按独立文档推进，排在 LB 之后。
+3. 收口：testbed 覆盖限流与多实例分发，补配置样例。
 
 ### 设计契约
 
@@ -307,6 +328,7 @@ clientConn → Decode → message.Request → filters
 7. **两级映射不变**：filter 定「请求→服务」，backend 定「服务→实例」；v08 不做换实例重试。
 8. **注册表与链分离**：`plugins.{tcp,http,transformer}` 只提供配置体，各 `enabled` 与 route `filters` 只提供名字；运行态只组装并集，注册表多余条目不得进入运行态。
 9. **Plan 单次计算**：`Build` 只调用一次 `Calculate`（返回 `*Plan`），`Compile` 只消费 Plan；`ValidateWriting` 可读原始 `platforms` 做声明层校验（nil vs `[]`、auth 是否声明），但不得重复生成 Plan。
+10. **LB 与健康探测分离**：E 阶段只做选择算法，候选为全部实例；健康状态、摘除与恢复归 F 阶段，由独立文档设计与验收。
 
 ### 阶段 A —— 插件注册表分类（builder）【已完成】
 
@@ -344,109 +366,92 @@ clientConn → Decode → message.Request → filters
 - C5：既有行为等价，全部 route 都不声明 `filters` 时执行顺序与 v07 一致。
 - 主要文件：`handler/handler.go`。
 
-### 阶段 D —— HTTP 限流 filter
+### 阶段 D —— HTTP 限流 filter（builder + handler）【已完成】
 
-#### 结构设计
+- D1 配置与 Plan：`RouteRuleConfig` 增 `rate_limit`，运行态 `RateLimitFilterConfig` 增 `Limiters` / `Rules`，`PlannedRoute` 增 `RateLimit`，`Calculate` 一次展平。
+- D2 校验与编译：`ValidateWriting` 校验声明了 `rate_limit` 的 route 必须在 pipeline 中启用；`ValidateRuntime` 校验维度、`qps`、`burst`；`Compile` 聚合按 `RouteID` 的规则表。
+- D3 令牌桶：`TokenBucket` 惰性补充，令牌上限为 `burst`，时间源可注入，单桶 `mutex` 保证并发安全。
+- D4 Limiter：`Limiter` 接口 + `RouteLimiter`；构造时按路由预建桶，`Allow` 按 `req.RouteID` 隔离判定。
+- D5 Filter 与 handler：`RateLimiter` 按 `RouteID` 分发；`buildFilter` 构造并绑定；`ErrRateLimited` 映射 429，带 `Retry-After`。
+- D6 测试与样例：bucket / limiter / filter 单测；`gateway.yaml`、`platform.yaml` 启用 `rate_limit`；`builder/config_test.go` 校验样例。
+- 主要文件：`handler/http_filter/ratelimit/`、`builder/{config,platform,calculate,compile,validate_writing,validate_runtime,hydrate_http}.go`、`handler/handler.go`、`pkg/errors/errors.go`。
 
-三层：**filter（分发）→ Limiter（维度 + 判定）→ TokenBucket（令牌算法）**。
+### 阶段 E —— 服务级负载均衡（backend + builder）【未开始】
 
-```text
-RateLimitFilter
-  └── limiters map[RouteID]Limiter     ← 路由配置决定归哪个 Limiter
-        ├── RouteLimiter（v08）
-        │     └── buckets map[RouteID]*TokenBucket   ← 构造时参数烘进桶，预建
-        ├── IPLimiter（后续）
-        │     └── params + buckets map[RouteID+IP]*TokenBucket  ← 参数留存，桶懒建 + 淘汰
-        └── IdentityLimiter（后续）
-              └── 同 IPLimiter，key 换 Subject
-```
+- **主目标**：每个 service 按配置选择实例，`BManager.Call` 不再写死 `instances[0]`。
+- **交付物**
+  1. service 级 `lb` 配置与编译产物。
+  2. `LoadBalancer` 接口、工厂与 `round_robin` 实现。
+  3. `BManager.Call` 的实例选择接入。
+  4. 单测与多实例 testbed。
+  5. 配置样例与文档更新。
+- **验收标准**
+  - [ ] 多实例 `round_robin` 按实例顺序轮询；单实例正常。
+  - [ ] 空实例返回 `ErrNoInstance`，对外映射 503。
+  - [ ] 未知 `lb` 算法在 Build 阶段报错。
+  - [ ] `go build ./...`、`go vet ./...`、`go test ./... -race` 通过。
+  - [ ] testbed 两个 fakebackend 验证分发，配置样例可构建。
+- **依赖**：阶段 D 已完成；无外部依赖。
+- **风险**
+  - LB 做成全局单例会串服务状态，必须 per-service 构造。
+  - 一致性哈希需要请求 key，最少连接需要 in-flight 计数；v08 只做 `round_robin`。
+  - `Instance.healthy` 默认 `false`，E 阶段不接健康过滤，避免候选被全部排除。
+- **任务**
+  1. `ServiceConfig` 增 `lb` 字段，`PlannedService` / `ServiceRef` 透传，空值默认 `round_robin`。
+  2. `ValidateWriting` 校验 `lb` 名称属于支持集合，未知算法返回 `ErrInvalidConfig`。
+  3. 定义 `LoadBalancer` 接口与 `lbFactories` 工厂，未知算法返回错误。
+  4. 实现 `RoundRobin.Pick`：per-service 原子计数取模候选数，空候选返回 `ErrNoInstance`。
+  5. `buildService` 为每个 service 构造独立 LB 实例并写入 `Service.lb`。
+  6. `BManager.Call` 改为先 `Pick` 再向实例池 `Get`，release 回调语义不变。
+  7. `round_robin` 单测覆盖多实例轮询、单实例、空实例、并发计数。
+  8. testbed 多实例用例：两个 fakebackend 验证请求分发，保留单实例回归。
+  9. 更新 `gateway.yaml` / `platform.yaml` 样例与 `builder/config_test.go`。
+  10. 更新 `ROADMAP.md` 的 v08 状态与「已知待办」。
+- **范围**：E 只做选择算法；健康状态、主动探测、摘除与恢复不在本阶段。
+- **主要文件**：`backend/{loadbalancer,backend,model}.go`、`builder/{platform,config,calculate,compile,validate_writing}.go`、`pkg/constant/constant.go`、`configs/*.yaml`、`testbed/*_test.go`。
 
-- **Filter 只做分发**：按 `req.RouteID` 找到负责的 `Limiter` 调 `Allow`；找不到 = 该路由无限流，放行；不持有参数，不知道维度。
+### 阶段 F —— 服务健康探测【未开始，另开文档】
 
-```go
-type RateLimitFilter struct {
-    limiters map[string]Limiter
-}
+- **主目标**：为 LB 提供可过滤的实例健康状态。
+- **说明**：设计、实现与测试另开文档；本文件只保留阶段依赖与入口/出口。
+- **验收标准**：在独立文档中定义并验收；本文件只保留依赖与入口/出口。
+- **依赖**：阶段 E 完成。
+- **入口**：LB 已能按 `Pick` 从候选实例中选择。
+- **出口**：健康状态可作为 LB 候选过滤输入；测试与验收在独立文档维护。
 
-func (f *RateLimitFilter) HandleHTTPFilt(req) {
-    limiter, ok := f.limiters[req.RouteID]  // 路由 → limiter
-    if !ok {
-        return nil, nil                      // 无限流
-    }
-    ok, retryAfter := limiter.Allow(req)
-    if !ok {
-        return retryResponse(retryAfter), ErrRateLimited
-    }
-    return nil, nil
-}
-```
+### 阶段 G —— v08 验收与文档收口【未开始】
 
-- **Limiter 接口**：`Allow(req) (ok bool, retryAfter time.Duration)`；每种维度一个实现，参数与桶自持，判定完全自包含。
-- **RouteLimiter（v08）**：构造时拿 `map[RouteID]RateLimitParams`，为每条路由预建 `TokenBucket`（QPS/burst 烘进桶）；请求时按 `req.RouteID` 查桶；参数只在构造期使用，运行时不以独立形态存在。
-- **TokenBucket**：具体类型，非接口。
-  - 补充算法：惰性补充，每次 `Allow` 按 elapsed × qps 补令牌，上限 burst。
-  - 时间源可注入，单测可验证令牌恢复。
-  - 并发：每桶一把 mutex；各 Limiter 实现内部组合使用。
-- **构造时绑定**：`buildFilter` 根据路由配置决定每条路由归哪个 Limiter。
-  - v08：所有路由指向同一个 `RouteLimiter` 实例。
-  - 后续加 per-IP：对应路由改指 `IPLimiter` 实例，filter 代码与接口都不变。
-
-**配置规则**
-
-- pipeline 含 `rate_limit` 但 route 未声明参数 → 不限流，放行。与 auth 的 fail-closed 不同，限流不涉及安全边界。
-- route 声明了 `rate_limit` 但 pipeline 不含 `rate_limit` → 编译期报错。
-- 推荐顺序 `[auth, rate_limit]`：先挡非法请求再计数，避免攻击流量消耗正常配额。
-- 单机限流：每个进程独立桶，多副本部署时总限额 = N × qps。
-
-**数据流**：`builder Compile → map[RouteID]RateLimitParams → NewRouteLimiter(params) → 参数烘进 TokenBucket → 请求时 bucket.Allow() 自判定`。
-
-#### 子任务
-
-- D1 配置与 Plan
-  - `RouteRuleConfig` 加 `RateLimit *RouteRateLimitConfig{QPS,Burst}`。
-  - 运行态 `RateLimitFilterConfig{Params map[RouteID]RateLimitParams}` / `RateLimitParams{QPS,Burst}` 进 `config.go`。
-  - `httpFilterHydrators` 注册 `rate_limit`，照 `hydrateTCPLimit` 写法。
-  - `PlannedRoute` 增 `RateLimitParams`，`Calculate` 展平。
-- D2 校验与编译
-  - `ValidateWriting` 新增 `validateRouteRateLimitDeclarations`（pipeline 含 `rate_limit` ↔ 声明一致性，与 auth 的校验对称）。
-  - `ValidateRuntime` 校验 `qps > 0`、`burst >= 1`。
-  - `Compile` 新增 `attachRateLimitParams` 装入参数表，同 `attachAuthPolicies`。
-- D3 令牌桶：`handler/http_filter/ratelimit/bucket.go`，`TokenBucket` 具体类型，`Allow(now) (bool, time.Duration)`。
-  - 单测覆盖连续消费耗尽、时间推进恢复、并发安全。
-- D4 Limiter 接口 + RouteLimiter：`handler/http_filter/ratelimit/limiter.go`，`Limiter` 接口 + `NewRouteLimiter(params)` 预建桶。
-  - 单测覆盖放行 / 超限 / 多路由隔离。
-- D5 Filter + handler 接入
-  - `handler/http_filter/ratelimit/ratelimit.go`，`RateLimitFilter` 分发。
-  - `handler.go` 的 `buildFilter` 增 `case RateLimitFilterConfig`，构造 `RouteLimiter` + 绑定路由 → limiter 映射 + `RateLimitFilter`。
-  - `ErrorResponse` 增 `ErrRateLimited → 429` 映射；`pkg/errors` 新增 `ErrRateLimited`。
-- D6 单测与配置样例：filter 级单测（放行、超限 429 + `Retry-After`、无参数放行、并发安全）；`gateway.yaml` / `platform.yaml` 更新。
-- 主要文件：`handler/http_filter/ratelimit/`（`bucket.go`、`limiter.go`、`ratelimit.go`）、`builder/{platform,config,calculate,compile,validate_writing,validate_runtime,hydrate_http}.go`、`handler/handler.go`、`pkg/errors/errors.go`。
-
-### 阶段 E —— 负载均衡（backend）
-
-- E1：service 级配置 `lb`（默认 `round_robin`），随 `ServiceRef` 传入运行态。
-- E1 校验：编译期校验未知算法。
-- E2：实现 `LoadBalancer`。
-  - `round_robin`：原子计数。
-  - 候选过滤 unhealthy，全 unhealthy 时回退全量。
-- E3：`Call` 改为 `lb.Pick(instances)` 取实例后再取该实例的池；release 语义不变。
-- E4：单测覆盖多实例轮询均衡、单实例、空实例、并发计数正确。
-- 主要文件：`backend/{loadbalancer,backend,model}.go`、`builder/{platform,config,compile,validate}.go`、`backend/*_test.go`。
-
-### 阶段 F —— 测试与文档
-
-- F1：testbed 两条路由不同 pipeline（一条 auth + 限流、一条 public），限流 429 且后端未被触达。
-- F2：testbed 多实例 `round_robin` 分发（两个 fakebackend）。
-- F3：配置样例更新，`gateway.yaml` 启用 `rate_limit`，`platform.yaml` 逐条给出 `filters` / `rate_limit` / `lb` 示例。
-- F4：勾选本文件，删除「已知待办」v08 负载均衡条。
+- **主目标**：补齐 v08 跨阶段验收与文档，确认 E/F 的交付物可复现。
+- **交付物**
+  1. `rate_limit` 429 的 testbed 用例。
+  2. v08 验收清单与配置样例。
+  3. 更新后的 `ROADMAP.md` 状态。
+- **验收标准**
+  - [ ] testbed 触发 429 且后端未被触达。
+  - [ ] LB 多实例用例与限流用例同批通过。
+  - [ ] 配置样例 `builder.Build` 成功。
+- **依赖**：阶段 E、F 完成；F 的探测验收由其独立文档维护。
+- **任务**
+  1. 补 testbed：限流 429 且后端未被触达。
+  2. 汇总 E/F 的单测与集成测试结果。
+  3. 更新配置样例与相关文档。
+  4. 勾选版本清单，清理「已知待办」。
 
 ### 明确不在 v08
 
-- 换实例重试、熔断、主动健康探测（留 v09/v10）。
+- 换实例重试、熔断、请求级重试预算（留 v09/v10）。
 - per-identity / per-IP / 分布式限流：v08 只做单机 route 级 `RouteLimiter`；后续维度实现 `Limiter` 接口即可，不改编排层。
 - pipeline 热加载、按 method/host 再细分 filter 组合。
 - 多凭证 / 多 IdP / JWKS / RS256（未定版本）。
 
 ### 顺序
 
-`A → B → C → D → E → F`。A–C 已完成；D 新增限流 filter；E 与 D 无耦合，可并行；F 收口。
+`A → B → C → D → E → F → G`。A–D 已完成；E 为服务级 LB；F 为健康探测（另开文档）；G 为 v08 收口。E 完成后才能进入 F。
+
+## 变更记录
+
+| 日期 | 变更 | 原因 | 影响 |
+|---|---|---|---|
+| 2026-11-04 | 压缩 v08 D 为已完成记录 | D 已落地，避免设计细节与实现重复 | 限流章节只保留交付结果 |
+| 2026-11-04 | 拆分 v08 E 负载均衡规划 | 进入实现前明确交付物、验收与任务顺序 | 新增阶段总览与 10 条任务 |
+| 2026-11-04 | 健康探测移出 roadmap | 探测设计复杂，避免与 LB 实现混在一起 | F 只保留入口/出口，详细文档另开 |

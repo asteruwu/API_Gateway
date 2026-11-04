@@ -136,6 +136,25 @@ func TestCalculateFlattensPlan(t *testing.T) {
 	}
 }
 
+// TestCalculateFlattensLBPolicy 校验 lb 空值默认与显式值透传
+func TestCalculateFlattensLBPolicy(t *testing.T) {
+	platforms := []PlatformConfig{{
+		Name: "shopA",
+		Service: []ServiceConfig{
+			{Name: "default"},
+			{Name: "least", LB: "least_conn"},
+		},
+	}}
+
+	plan := Calculate(GatewayConfig{}, platforms)
+	if got := plan.Services[0].LB; got != gconst.DefaultLBPolicy {
+		t.Errorf("default LB = %q, want %q", got, gconst.DefaultLBPolicy)
+	}
+	if got := plan.Services[1].LB; got != "least_conn" {
+		t.Errorf("explicit LB = %q, want least_conn", got)
+	}
+}
+
 // TestCalculateFlattensRateLimit 校验 route 限流参数展平、维度默认值与缺省区分
 func TestCalculateFlattensRateLimit(t *testing.T) {
 	platforms := []PlatformConfig{{

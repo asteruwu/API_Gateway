@@ -13,6 +13,7 @@ type PlatformConfig struct {
 type ServiceConfig struct {
 	Name        string            `yaml:"name"`
 	Transformer string            `yaml:"transformer"`
+	LB          string            `yaml:"lb"`
 	Instances   []InstanceConfig  `yaml:"instances"`
 	Routes      []RouteRuleConfig `yaml:"routes"`
 }

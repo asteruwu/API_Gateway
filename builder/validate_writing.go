@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	gconst "API_Gateway/pkg/constant"
 	gerrors "API_Gateway/pkg/errors"
 	"API_Gateway/pkg/tools"
 )
@@ -27,6 +28,7 @@ func ValidateWriting(gw GatewayConfig, platforms []PlatformConfig, plan *Plan) e
 	errs = append(errs, validateRouteConflicts(plan)...)
 	errs = append(errs, validateRouteAuthDeclarations(platforms, plan)...)
 	errs = append(errs, validateRouteRateLimitDeclarations(platforms, plan)...)
+	errs = append(errs, validateServiceLBPolicy(plan, gw.LoadBalancer.Enabled)...)
 	errs = append(errs, validatePluginReferences(gw, plan)...)
 	errs = append(errs, validateEnabledUniqueness(gw)...)
 	errs = append(errs, validatePoolConfig(gw.Pool)...)
@@ -101,6 +103,28 @@ func validateServiceDeclarations(p PlatformConfig) []error {
 		}
 	}
 	return errs
+}
+
+// validateServiceLBPolicy 校验 service 的 lb 名称在网关声明的支持集合内
+func validateServiceLBPolicy(plan *Plan, enabled []string) []error {
+	policies := effectiveLBPolicySet(enabled)
+	var errs []error
+	for _, s := range plan.Services {
+		if slices.Contains(policies, s.LB) {
+			continue
+		}
+		errs = append(errs, fmt.Errorf("%w: service %q uses unenabled lb policy %q",
+			gerrors.ErrInvalidConfig, s.Name, s.LB))
+	}
+	return errs
+}
+
+// effectiveLBPolicySet 返回生效的 LB 算法集合；未配置时仅支持默认算法
+func effectiveLBPolicySet(enabled []string) []string {
+	if len(enabled) == 0 {
+		return []string{gconst.DefaultLBPolicy}
+	}
+	return enabled
 }
 
 // validateRouteDeclarations 校验 route 的必填字段、methods 元素与 filters 局部唯一性

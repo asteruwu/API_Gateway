@@ -76,6 +76,9 @@ func TestCompileSuccess(t *testing.T) {
 		if len(ref.Instances) != 1 || ref.Instances[0].Addr != addr {
 			t.Errorf("service %q instances = %+v, want addr %q", ref.Name, ref.Instances, addr)
 		}
+		if ref.LB != gconst.DefaultLBPolicy {
+			t.Errorf("service %q LB = %q, want %q", ref.Name, ref.LB, gconst.DefaultLBPolicy)
+		}
 	}
 
 	// 路由规则装配进独立的 Router 字段，且 service 名已限定
@@ -321,6 +324,45 @@ func TestCompileServiceMissingTransformer(t *testing.T) {
 	_, err := compileForTest(GatewayConfig{}, platforms)
 	if !errors.Is(err, gerrors.ErrInvalidConfig) || !errors.Is(err, gerrors.ErrTransformerNotFound) {
 		t.Errorf("err = %v, want wrapping %v and %v", err, gerrors.ErrInvalidConfig, gerrors.ErrTransformerNotFound)
+	}
+}
+
+func TestCompileServiceUnsupportedLB(t *testing.T) {
+	gw := GatewayConfig{
+		LoadBalancer: PluginActivation{Enabled: []string{gconst.LBPolicyRoundRobin}},
+		Transformer:  PluginActivation{Enabled: []string{"testT"}},
+		Plugins:      PluginsConfig{Transformer: map[string]any{"testT": TestTransformerConfig{}}},
+	}
+	platforms := []PlatformConfig{
+		{Name: "shopA", Service: []ServiceConfig{
+			{Name: "order", Transformer: "testT", LB: "least_conn", Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}}},
+		}},
+	}
+
+	_, err := compileForTest(gw, platforms)
+	if !errors.Is(err, gerrors.ErrInvalidConfig) {
+		t.Errorf("err = %v, want %v", err, gerrors.ErrInvalidConfig)
+	}
+}
+
+func TestCompileServiceLBFromGatewaySupported(t *testing.T) {
+	gw := GatewayConfig{
+		LoadBalancer: PluginActivation{Enabled: []string{"least_conn"}},
+		Transformer:  PluginActivation{Enabled: []string{"testT"}},
+		Plugins:      PluginsConfig{Transformer: map[string]any{"testT": TestTransformerConfig{}}},
+	}
+	platforms := []PlatformConfig{
+		{Name: "shopA", Service: []ServiceConfig{
+			{Name: "order", Transformer: "testT", LB: "least_conn", Instances: []InstanceConfig{{Addr: "127.0.0.1:8081"}}},
+		}},
+	}
+
+	cfg, err := compileForTest(gw, platforms)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(cfg.Backend.Service) != 1 || cfg.Backend.Service[0].LB != "least_conn" {
+		t.Errorf("backend services = %+v, want lb least_conn", cfg.Backend.Service)
 	}
 }
 

@@ -108,6 +108,7 @@ type BackendConfig struct {
 
 type ServiceRef struct {
 	Name      string
+	LB        string
 	Instances []InstanceConfig
 }
 
