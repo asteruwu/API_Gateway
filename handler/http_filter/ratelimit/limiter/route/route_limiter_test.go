@@ -1,13 +1,11 @@
 package route
 
 import (
-	"slices"
 	"testing"
 	"time"
 
 	"API_Gateway/builder"
 	"API_Gateway/handler/message"
-	gconst "API_Gateway/pkg/constant"
 )
 
 func TestRouteLimiterAllowAndReject(t *testing.T) {
@@ -71,39 +69,5 @@ func TestRouteLimiterUnknownRoutePasses(t *testing.T) {
 
 	if ok, retryAfter := limiter.Allow(&message.Request{RouteID: "route#missing"}); !ok || retryAfter != 0 {
 		t.Errorf("unknown route = (%v, %v), want (true, 0)", ok, retryAfter)
-	}
-}
-
-func TestPreparationForRouteLimiter(t *testing.T) {
-	rules := map[string]builder.RateLimitRule{
-		"route#a": {Dimension: gconst.RateLimitByRoute, Params: builder.RateLimitParams{QPS: 2, Burst: 3}},
-		"route#b": {Dimension: gconst.RateLimitByRoute, Params: builder.RateLimitParams{QPS: 4, Burst: 5}},
-		"route#c": {Dimension: gconst.RateLimitDimension("ip"), Params: builder.RateLimitParams{QPS: 6, Burst: 7}},
-	}
-
-	params, routes := PreparationForRouteLimiter(rules)
-	if len(params) != 2 {
-		t.Fatalf("params = %v, want 2 entries", params)
-	}
-	if got := params["route#a"]; got != (builder.RateLimitParams{QPS: 2, Burst: 3}) {
-		t.Errorf("params[route#a] = %+v, want qps 2 burst 3", got)
-	}
-	if got := params["route#b"]; got != (builder.RateLimitParams{QPS: 4, Burst: 5}) {
-		t.Errorf("params[route#b] = %+v, want qps 4 burst 5", got)
-	}
-	if _, ok := params["route#c"]; ok {
-		t.Errorf("params contains non-route dimension: %v", params)
-	}
-
-	slices.Sort(routes)
-	if !slices.Equal(routes, []string{"route#a", "route#b"}) {
-		t.Errorf("routes = %v, want [route#a route#b]", routes)
-	}
-}
-
-func TestPreparationForRouteLimiterEmpty(t *testing.T) {
-	params, routes := PreparationForRouteLimiter(nil)
-	if len(params) != 0 || len(routes) != 0 {
-		t.Errorf("params = %v, routes = %v, want empty", params, routes)
 	}
 }

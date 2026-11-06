@@ -144,6 +144,23 @@ func TestNewRateLimiterUnsupportedLimiter(t *testing.T) {
 	}
 }
 
+func TestNewRateLimiterRuleDimensionNotEnabled(t *testing.T) {
+	cfg := builder.RateLimitFilterConfig{
+		Limiters: []gconst.RateLimitDimension{gconst.RateLimitByRoute},
+		Rules: map[string]builder.RateLimitRule{
+			"route#a": {Dimension: gconst.RateLimitDimension("ip"), Params: builder.RateLimitParams{QPS: 1, Burst: 1}},
+		},
+	}
+
+	_, err := NewRateLimiter(cfg)
+	if err == nil {
+		t.Fatal("err = nil, want dimension not enabled error")
+	}
+	if !strings.Contains(err.Error(), "route#a") || !strings.Contains(err.Error(), "ip") {
+		t.Errorf("err = %v, want mention route#a and ip", err)
+	}
+}
+
 func TestNewRateLimiterEmptyRules(t *testing.T) {
 	r, err := NewRateLimiter(builder.RateLimitFilterConfig{})
 	if err != nil {

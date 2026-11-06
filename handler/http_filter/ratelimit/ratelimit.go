@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -18,34 +19,61 @@ type RateLimiter struct {
 	limiters map[string]limiter.Limiter
 }
 
-func NewRateLimiter(cfg builder.RateLimitFilterConfig) (*RateLimiter, error) {
-	limiters := make(map[string]limiter.Limiter)
+type RouteParamsTable struct {
+	table map[string]builder.RateLimitParams
+}
 
-	for _, l := range cfg.Limiters {
-		switch l {
+func NewRateLimiter(cfg builder.RateLimitFilterConfig) (*RateLimiter, error) {
+	byDim, err := groupRulesByDimension(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	limiters := make(map[string]limiter.Limiter)
+	for _, dim := range cfg.Limiters {
+		group := byDim[dim]
+		switch dim {
 		case gconst.RateLimitByRoute:
-			params, routes := route.PreparationForRouteLimiter(cfg.Rules)
-			routeLimiter := route.NewRouteLimiter(params)
-			attachToLimiters(routes, routeLimiter, limiters)
+			if len(group.table) == 0 {
+				continue
+			}
+			attachToLimiters(group.table, route.NewRouteLimiter(group.table), limiters)
 		default:
-			return nil, fmt.Errorf("unsupported rate limit dimension %q", l)
+			return nil, fmt.Errorf("unsupported rate limit dimension %q", dim)
 		}
 	}
 	return &RateLimiter{limiters: limiters}, nil
 }
 
-func attachToLimiters(routes []string, l limiter.Limiter, limiters map[string]limiter.Limiter) {
-	for _, route := range routes {
-		limiters[route] = l
+func groupRulesByDimension(cfg builder.RateLimitFilterConfig) (map[gconst.RateLimitDimension]RouteParamsTable, error) {
+	byDim := make(map[gconst.RateLimitDimension]RouteParamsTable)
+	for routeID, rule := range cfg.Rules {
+		if !slices.Contains(cfg.Limiters, rule.Dimension) {
+			return nil, fmt.Errorf("route %q uses rate limit dimension %q which is not enabled in limiters %v",
+				routeID, rule.Dimension, cfg.Limiters)
+		}
+		t := byDim[rule.Dimension]
+		if t.table == nil {
+			t.table = make(map[string]builder.RateLimitParams)
+			byDim[rule.Dimension] = t
+		}
+		t.table[routeID] = rule.Params
+	}
+	return byDim, nil
+}
+
+func attachToLimiters(table map[string]builder.RateLimitParams, l limiter.Limiter, limiters map[string]limiter.Limiter) {
+	for routeID := range table {
+		limiters[routeID] = l
 	}
 }
 
 func (r *RateLimiter) HandleHTTPFilt(req *message.Request) (*message.Response, error) {
-	limiter, ok := r.limiters[req.RouteID]
+	l, ok := r.limiters[req.RouteID]
 	if !ok {
 		return nil, nil
 	}
-	ok, retryAfter := limiter.Allow(req)
+	ok, retryAfter := l.Allow(req)
 	if ok {
 		return nil, nil
 	}
