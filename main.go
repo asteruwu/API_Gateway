@@ -51,7 +51,10 @@ func buildConfig() (*builder.Config, error) {
 
 // initComponents 组件初始化，按数据流逆序 backend → handler → connector 接线
 func initComponents(table *builder.Config) (*backend.BManager, *connector.Listener, error) {
-	bk := backend.NewBManager(table.Backend)
+	bk, err := backend.NewBManager(table.Backend)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to new backend: %w", err)
+	}
 
 	hdl, err := handler.NewHandler(table.Handler, bk.Call)
 	if err != nil {

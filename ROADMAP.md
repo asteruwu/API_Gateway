@@ -41,23 +41,25 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 完成完�
 | `handler/message/` | **网关唯一的中间表示**（统一 HTTP 模型），叶子包，不依赖任何包 | `Request`、`Response` |
 | `handler/http_filter/` | 请求级过滤器：鉴权、限流、路由。可放行或中断并直接产出响应 | `HTTPFilter` |
 | `handler/transformer/` | 协议转换，每个实现代表一种后端协议；拿到后端连接后全权负责写请求帧、读响应帧、反序列化 | `Transformer` |
-| `backend/` | 服务注册表、负载均衡选实例、连接池管理（借出/归还），不接触协议字节 | `BManager`、`Service`、`Instance`、`LoadBalancer` |
+| `backend/` | 服务注册表、按 service 选择实例、连接池管理（借出/归还），不接触协议字节 | `BManager`、`Service`、`Instance` |
+| `backend/lb/` | **负载均衡契约与算法**：候选抽象、选择接口、工厂与具体算法；不 import `backend` | `LoadBalancer`、`Candidate` |
 | `backend/pool/` | **连接池实现**：容量/空闲/超时管理、失效探测、reaper 回收；不碰协议 | `ConnPool`、`PoolConn` |
 
-- **依赖方向**：单向无环，`main → {connector, handler, backend}`。
+- **依赖方向**：单向无环，`main → {connector, handler, backend}`；`backend → backend/lb`、`backend → backend/pool`。
 - **顶层模块**：三个互不 import，靠 `main.go` 注入函数值接线。
-- **叶子包**：`message` 被 `http_filter` 与 `transformer` 共享。
+- **叶子包**：`message` 被 `http_filter` 与 `transformer` 共享；`backend/lb` 是负载均衡叶子契约包。
 
 ## 当前状态
 
-> 最后更新：2026-11-04。
+> 最后更新：2026-11-21。
 
-- **已完成**：v00–v07；v08 A–D（插件注册表、route pipeline、按 `RouteID` 执行、HTTP 限流 filter）。全部包与接口已就位，`go build ./...`、`go vet ./...`、`go test ./... -race` 通过。
-- **当前阶段**：v08 E，服务级负载均衡（未开始）；完成后进入 F，服务健康探测（设计与实现另开文档）。
+- **已完成**：v00–v07；v08 A–E（插件注册表、route pipeline、按 `RouteID` 执行、HTTP 限流 filter、服务级负载均衡）。全部包与接口已就位，`go build ./...`、`go vet ./...`、`go test ./... -race` 通过。
+- **当前阶段**：v08 F，服务健康探测（设计草稿已建，实现未开始）。
 - **Build 链路**：`Load → Calculate（单次 Plan）→ ValidateWriting → Hydrate → ValidateRuntime → Compile(gw, plan)`。
 - **职责划分**：`Calculate` 产出统一 `Plan`；`Compile` 只做装配。
 - **handler 执行**：已切换为按 `RouteID` 取 pipeline，旧 `Filters` 已删除。
-- **尚未接线**：`BManager.Call` 写死 `instances[0]`，由 E 处理；transformer 帧协议为长度前缀的**模拟协议**，非真实 gRPC/MCP；v07 认证仅 HS256 + 单一静态密钥。
+- **backend 选实例**：`BManager.Call` 已通过 `Service.pick` 调用 LB；当前支持 `round_robin` / `random`。
+- **尚未接线**：transformer 帧协议为长度前缀的**模拟协议**，非真实 gRPC/MCP；v07 认证仅 HS256 + 单一静态密钥。
 
 多凭证、多 IdP、JWKS、RS256、有状态 verifier 均未做，见「已知待办 · 未定版本」。服务健康探测的详细设计不写入本文件，阶段 F 只保留入口与出口。
 
@@ -115,6 +117,13 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 完成完�
 - **运行态**：`TokenBucket` + `RouteLimiter` + `RateLimiter` 分发；429 + `Retry-After`。
 - **测试与样例**：bucket / limiter / filter 单测，配置样例与 `config_test`。
 
+### v08 E 阶段
+
+- **LB 契约**：`backend/lb` 叶子包定义 `Candidate` / `LoadBalancer` / 工厂，不 import `backend`。
+- **算法**：`round_robin` 与 `random`，按 service 独立构造。
+- **编排**：`Service.pick` 调 LB 返回下标；`BManager.Call` 再向实例池借连接。
+- **测试与样例**：LB 单测、testbed 多实例分发、配置样例与 `config_test`。
+
 ## 里程碑一览
 
 | 版本 | 里程碑 | 新增能力 |
@@ -127,7 +136,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 完成完�
 | v05 | 路由能力 | router 真实实现，支持配置文件定义多条路由规则 |
 | v06 | 连接抽象 | ConnPool 落地 + 第一个 transformer 真实实现（比如先做 gRPC） |
 | v07 | 安全认证 | 鉴权 filter 真实逻辑（JWT 校验） |
-| v08 | 管道细化 | filter chain 可配置化（不同路由挂不同 filter 组合）+ HTTP 层精细限流 + 服务级负载均衡 + 服务健康探测（另开文档） |
+| v08 | 管道细化 | filter chain 可配置化（不同路由挂不同 filter 组合）+ HTTP 层精细限流 + 服务级负载均衡（round_robin / random）+ 服务健康探测（设计草稿） |
 | v09 | 协议扩展 | 第二个 transformer 实现（验证新增协议不改已有代码） |
 | v10 | 最终完善 | 错误处理统一、响应路径补全走查、代码整理，可运行版本 |
 
@@ -213,13 +222,13 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 完成完�
   - [x] 阶段 F（配置与文档）：`gateway.yaml` 启用 `auth` 并配 `credentials`/`jwt`；`platform.yaml` 逐条声明（含 `public: true` 示例）；新增 `builder/config_test.go` 校验示例配置。
   - [x] 安全加固 G1–G3（路由）：`path.Clean` 归一化、前缀段边界、Host 剥离端口 + 大小写不敏感。
   - [x] 安全加固 G4–G6（handler）：写响应设 write deadline（10s）；错误 body 改回 `http.StatusText`，内部细节只进日志；conn 包 `io.LimitedReader`（1MB）限制单请求读入量。
-- [ ] **v08 管道细化** —— 进行中，A–D 已完成，剩余 E–G。
+- [ ] **v08 管道细化** —— 进行中，A–E 已完成，剩余 F–G。
   - [x] 阶段 A：插件注册表按类别隔离。
   - [x] 阶段 B：route 级 pipeline 与单次 Plan，编译装配、校验和测试收口。
   - [x] 阶段 C：handler 按 RouteID 执行 pipeline，删除旧 `Filters` 字段。
   - [x] 阶段 D：HTTP 限流 filter（route 维度、429 + `Retry-After`）。
-  - [ ] 阶段 E：服务级负载均衡。
-  - [ ] 阶段 F：服务健康探测（设计与实现另开文档）。
+  - [x] 阶段 E：服务级负载均衡（`round_robin` / `random`）。
+  - [ ] 阶段 F：服务健康探测（设计草稿已建，实现未开始）。
   - [ ] 阶段 G：v08 验收与文档收口。
 - [ ] v09 协议扩展
 - [ ] v10 最终完善
@@ -263,8 +272,8 @@ clientConn → Decode → message.Request → filters
 
 ### v08 管道细化
 
-- 负载均衡：`BManager.Call` 写死 `instances[0]`，由阶段 E 处理。
-- 健康探测：设计与实现另开文档；本文件只保留阶段依赖，完成后回填阶段状态。
+- 健康探测：设计草稿见 `design/backend/HealthTracker.md`；实现与测试未开始。
+- v08 收口：限流 429 testbed 与跨阶段验收由阶段 G 处理。
 
 ### v09 协议扩展
 
@@ -294,21 +303,21 @@ clientConn → Decode → message.Request → filters
 - **行为模式**：现做 `echo` + `fixed`；`error` / `delay` 等做到重试/熔断（v03/v06）时再加。
 - **健康探测**：故障注入模式与测试用例在独立文档中维护，不写入本文件。
 
-## v08 剩余工作（阶段 D–G）
+## v08 阶段明细（D–G）
 
-v08 三条主线：**filter chain 可配置化**（已完成）、**HTTP 层精细限流**（已完成）、**服务级负载均衡**（下一步）。健康探测排在 LB 之后，设计与实现另开文档。
+v08 三条主线：**filter chain 可配置化**（已完成）、**HTTP 层精细限流**（已完成）、**服务级负载均衡**（已完成）。健康探测进入设计阶段，设计与实现另开文档。
 
 | 阶段 | 主目标 | 状态 |
 |---|---|---|
 | D | HTTP 限流 filter | 已完成 |
-| E | 服务级负载均衡 | 未开始 |
-| F | 服务健康探测 | 未开始（另开文档） |
+| E | 服务级负载均衡 | 已完成 |
+| F | 服务健康探测 | 进行中（设计草稿） |
 | G | v08 验收与文档收口 | 未开始 |
 
 ### 目标
 
-1. `BManager.Call` 接入负载均衡，不再写死 `instances[0]`。
-2. 服务健康探测按独立文档推进，排在 LB 之后。
+1. 服务级负载均衡：已完成，支持 `round_robin` / `random`。
+2. 服务健康探测：设计草稿已建，实现待排期。
 3. 收口：testbed 覆盖限流与多实例分发，补配置样例。
 
 ### 设计契约
@@ -328,7 +337,7 @@ v08 三条主线：**filter chain 可配置化**（已完成）、**HTTP 层精�
 7. **两级映射不变**：filter 定「请求→服务」，backend 定「服务→实例」；v08 不做换实例重试。
 8. **注册表与链分离**：`plugins.{tcp,http,transformer}` 只提供配置体，各 `enabled` 与 route `filters` 只提供名字；运行态只组装并集，注册表多余条目不得进入运行态。
 9. **Plan 单次计算**：`Build` 只调用一次 `Calculate`（返回 `*Plan`），`Compile` 只消费 Plan；`ValidateWriting` 可读原始 `platforms` 做声明层校验（nil vs `[]`、auth 是否声明），但不得重复生成 Plan。
-10. **LB 与健康探测分离**：E 阶段只做选择算法，候选为全部实例；健康状态、摘除与恢复归 F 阶段，由独立文档设计与验收。
+10. **LB 与健康探测分离**：E 阶段已完成选择算法，候选为全部实例；健康状态、摘除与恢复归 F 阶段，由独立文档设计与验收。
 
 ### 阶段 A —— 插件注册表分类（builder）【已完成】
 
@@ -375,47 +384,24 @@ v08 三条主线：**filter chain 可配置化**（已完成）、**HTTP 层精�
 - D5 Filter 与 handler：`RateLimiter` 按 `RouteID` 分发；`buildFilter` 构造并绑定；`ErrRateLimited` 映射 429，带 `Retry-After`。
 - D6 测试与样例：bucket / limiter / filter 单测；`gateway.yaml`、`platform.yaml` 启用 `rate_limit`；`builder/config_test.go` 校验样例。
 - 主要文件：`handler/http_filter/ratelimit/`、`builder/{config,platform,calculate,compile,validate_writing,validate_runtime,hydrate_http}.go`、`handler/handler.go`、`pkg/errors/errors.go`。
+### 阶段 E —— 服务级负载均衡（backend + builder）【已完成】
 
-### 阶段 E —— 服务级负载均衡（backend + builder）【未开始】
+- E1 配置与 Plan：`ServiceConfig` 增 `lb`，`PlannedService` / `ServiceRef` 透传，空值默认 `round_robin`；网关 `load_balancer.enabled` 声明支持集合。
+- E2 LB 契约：`backend/lb` 叶子包定义 `Candidate` / `LoadBalancer` / `lbFactories`，未知算法返回 `ErrInvalidConfig`。
+- E3 轮询：`round_robin` 用 per-service 原子计数取模候选数，空候选返回 `ErrNoInstance`。
+- E4 随机：`random` 注入 `intN`，空候选返回 `ErrNoInstance`。
+- E5 编排接入：`buildService` 为每个 service 构造独立 LB；`Service.pick` 调 LB 选下标，`BManager.Call` 再向实例池 `Get`，release 语义不变。
+- E6 测试：单测覆盖轮询、随机、单实例、空实例、并发计数；testbed 两个 fakebackend 验证多实例分发。
+- E7 样例与文档：样例配置启用 `round_robin` / `random`，`builder/config_test.go` 校验；文档收口。
+- 主要文件：`backend/lb/{lb,round_robin,random}.go`、`backend/{backend,service,model}.go`、`builder/{platform,config,calculate,compile,validate_writing}.go`、`pkg/constant/constant.go`、`configs/*.yaml`、`testbed/*_test.go`。
 
-- **主目标**：每个 service 按配置选择实例，`BManager.Call` 不再写死 `instances[0]`。
-- **交付物**
-  1. service 级 `lb` 配置与编译产物。
-  2. `LoadBalancer` 接口、工厂与 `round_robin` 实现。
-  3. `BManager.Call` 的实例选择接入。
-  4. 单测与多实例 testbed。
-  5. 配置样例与文档更新。
-- **验收标准**
-  - [ ] 多实例 `round_robin` 按实例顺序轮询；单实例正常。
-  - [ ] 空实例返回 `ErrNoInstance`，对外映射 503。
-  - [ ] 未知 `lb` 算法在 Build 阶段报错。
-  - [ ] `go build ./...`、`go vet ./...`、`go test ./... -race` 通过。
-  - [ ] testbed 两个 fakebackend 验证分发，配置样例可构建。
-- **依赖**：阶段 D 已完成；无外部依赖。
-- **风险**
-  - LB 做成全局单例会串服务状态，必须 per-service 构造。
-  - 一致性哈希需要请求 key，最少连接需要 in-flight 计数；v08 只做 `round_robin`。
-  - `Instance.healthy` 默认 `false`，E 阶段不接健康过滤，避免候选被全部排除。
-- **任务**
-  1. `ServiceConfig` 增 `lb` 字段，`PlannedService` / `ServiceRef` 透传，空值默认 `round_robin`。
-  2. `ValidateWriting` 校验 `lb` 名称属于支持集合，未知算法返回 `ErrInvalidConfig`。
-  3. 定义 `LoadBalancer` 接口与 `lbFactories` 工厂，未知算法返回错误。
-  4. 实现 `RoundRobin.Pick`：per-service 原子计数取模候选数，空候选返回 `ErrNoInstance`。
-  5. `buildService` 为每个 service 构造独立 LB 实例并写入 `Service.lb`。
-  6. `BManager.Call` 改为先 `Pick` 再向实例池 `Get`，release 回调语义不变。
-  7. `round_robin` 单测覆盖多实例轮询、单实例、空实例、并发计数。
-  8. testbed 多实例用例：两个 fakebackend 验证请求分发，保留单实例回归。
-  9. 更新 `gateway.yaml` / `platform.yaml` 样例与 `builder/config_test.go`。
-  10. 更新 `ROADMAP.md` 的 v08 状态与「已知待办」。
-- **范围**：E 只做选择算法；健康状态、主动探测、摘除与恢复不在本阶段。
-- **主要文件**：`backend/{loadbalancer,backend,model}.go`、`builder/{platform,config,calculate,compile,validate_writing}.go`、`pkg/constant/constant.go`、`configs/*.yaml`、`testbed/*_test.go`。
-
-### 阶段 F —— 服务健康探测【未开始，另开文档】
+### 阶段 F —— 服务健康探测【进行中（设计草稿）】
 
 - **主目标**：为 LB 提供可过滤的实例健康状态。
-- **说明**：设计、实现与测试另开文档；本文件只保留阶段依赖与入口/出口。
+- **设计文档**：[design/backend/HealthTracker.md](design/backend/HealthTracker.md)（草稿）
+- **说明**：设计、实现与测试在独立文档维护；本文件只保留阶段依赖与入口/出口。
 - **验收标准**：在独立文档中定义并验收；本文件只保留依赖与入口/出口。
-- **依赖**：阶段 E 完成。
+- **依赖**：阶段 E 已完成。
 - **入口**：LB 已能按 `Pick` 从候选实例中选择。
 - **出口**：健康状态可作为 LB 候选过滤输入；测试与验收在独立文档维护。
 
@@ -446,7 +432,7 @@ v08 三条主线：**filter chain 可配置化**（已完成）、**HTTP 层精�
 
 ### 顺序
 
-`A → B → C → D → E → F → G`。A–D 已完成；E 为服务级 LB；F 为健康探测（另开文档）；G 为 v08 收口。E 完成后才能进入 F。
+`A → B → C → D → E → F → G`。A–E 已完成；F 为健康探测（设计草稿已建，实现待开始）；G 为 v08 收口。F 完成后再做 G。
 
 ## 变更记录
 
@@ -455,3 +441,5 @@ v08 三条主线：**filter chain 可配置化**（已完成）、**HTTP 层精�
 | 2026-11-04 | 压缩 v08 D 为已完成记录 | D 已落地，避免设计细节与实现重复 | 限流章节只保留交付结果 |
 | 2026-11-04 | 拆分 v08 E 负载均衡规划 | 进入实现前明确交付物、验收与任务顺序 | 新增阶段总览与 10 条任务 |
 | 2026-11-04 | 健康探测移出 roadmap | 探测设计复杂，避免与 LB 实现混在一起 | F 只保留入口/出口，详细文档另开 |
+| 2026-11-21 | 阶段 E 完成 | LB 框架、round_robin/random、testbed 与样例落地 | v08 剩余 F/G |
+| 2026-11-21 | 阶段 F 进入设计 | 健康探测设计草稿建立 | F 状态改为进行中（设计草稿） |

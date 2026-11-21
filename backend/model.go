@@ -1,9 +1,11 @@
 package backend
 
 import (
-	cp "API_Gateway/backend/pool"
 	"net"
 	"sync/atomic"
+
+	"API_Gateway/backend/lb"
+	cp "API_Gateway/backend/pool"
 )
 
 type Backend interface {
@@ -13,7 +15,7 @@ type Backend interface {
 type Service struct {
 	name      string
 	instances []*Instance
-	lb        LoadBalancer
+	balancer  lb.LoadBalancer
 }
 
 type Instance struct {
@@ -21,3 +23,9 @@ type Instance struct {
 	healthy atomic.Bool
 	pool    *cp.ConnPool
 }
+
+func (i *Instance) Addr() string {
+	return i.addr
+}
+
+var _ lb.Candidate = (*Instance)(nil)
