@@ -5,6 +5,7 @@ import (
 	"API_Gateway/builder"
 	"API_Gateway/connector"
 	"API_Gateway/handler"
+	gconst "API_Gateway/pkg/constant"
 	"API_Gateway/testbed/fakebackend"
 	"bufio"
 	"fmt"
@@ -41,7 +42,10 @@ func startGateway(t *testing.T, cfg *builder.Config) {
 		}
 		cfg.Handler.Transformer = defaultTestTransformerConfig(services...)
 	}
-	bm := backend.NewBManager(cfg.Backend)
+	bm, err := backend.NewBManager(cfg.Backend)
+	if err != nil {
+		t.Fatalf("build backend: %v", err)
+	}
 	t.Cleanup(func() { _ = bm.Close() })
 	hdl, err := handler.NewHandler(cfg.Handler, bm.Call)
 	if err != nil {
@@ -133,6 +137,7 @@ func backendConfig(services map[string][]string) builder.BackendConfig {
 		}
 		svcList = append(svcList, builder.ServiceRef{
 			Name:      name,
+			LB:        gconst.DefaultLBPolicy,
 			Instances: instances,
 		})
 	}

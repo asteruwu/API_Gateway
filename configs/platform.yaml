@@ -6,8 +6,10 @@ platforms:
     service:
       - name: order
         transformer: testT
+        lb: round_robin
         instances:
           - addr: "127.0.0.1:8081"
+          - addr: "127.0.0.1:8083"
         routes:
           - path_prefix: /orders
             methods: [POST, PUT]
@@ -30,6 +32,7 @@ platforms:
               burst: 10
       - name: user
         transformer: testT
+        lb: random
         instances:
           - addr: "127.0.0.1:8082"
         routes:
@@ -43,6 +46,7 @@ platforms:
     service:
       - name: order
         transformer: testT
+        lb: round_robin
         instances:
           - addr: "127.0.0.1:8091"
         routes:

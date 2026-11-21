@@ -31,6 +31,10 @@ gateway:
   transformer:
     enabled:
       - testT
+  load_balancer:
+    enabled:
+      - round_robin
+      - random
   pool:
     max_conn: 64
     min_idle: 4

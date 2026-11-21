@@ -70,6 +70,9 @@ const RateLimitMaxRetryAfter = time.Duration(1<<63 - 1)
 // LBPolicyRoundRobin 轮询负载均衡算法
 const LBPolicyRoundRobin = "round_robin"
 
+// LBPolicyRandom 随机负载均衡算法
+const LBPolicyRandom = "random"
+
 // DefaultLBPolicy 未配置负载均衡算法时的默认值
 const DefaultLBPolicy = LBPolicyRoundRobin
 

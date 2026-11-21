@@ -16,6 +16,19 @@ func TestBuildSampleConfigs(t *testing.T) {
 	if len(cfg.Backend.Service) == 0 {
 		t.Fatal("expected services from sample configs")
 	}
+	services := make(map[string]ServiceRef, len(cfg.Backend.Service))
+	for _, svc := range cfg.Backend.Service {
+		services[svc.Name] = svc
+	}
+	if got := services["shopA.order"].LB; got != gconst.LBPolicyRoundRobin {
+		t.Errorf("shopA.order lb = %q, want %q", got, gconst.LBPolicyRoundRobin)
+	}
+	if got := len(services["shopA.order"].Instances); got != 2 {
+		t.Errorf("shopA.order instances = %d, want 2", got)
+	}
+	if got := services["shopA.user"].LB; got != gconst.LBPolicyRandom {
+		t.Errorf("shopA.user lb = %q, want %q", got, gconst.LBPolicyRandom)
+	}
 	if len(cfg.Handler.Filter.Pipelines) == 0 {
 		t.Fatal("expected route pipelines from sample configs")
 	}
