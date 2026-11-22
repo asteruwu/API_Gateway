@@ -61,7 +61,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 完成完�
 - **backend 选实例**：`BManager.Call` 已通过 `Service.pick` 调用 LB；当前支持 `round_robin` / `random`。
 - **尚未接线**：transformer 帧协议为长度前缀的**模拟协议**，非真实 gRPC/MCP；v07 认证仅 HS256 + 单一静态密钥。
 
-多凭证、多 IdP、JWKS、RS256、有状态 verifier 均未做，见「已知待办 · 未定版本」。服务健康探测的详细设计不写入本文件，阶段 F 只保留入口与出口。
+多凭证、多 IdP、JWKS、RS256、有状态 verifier 均未做，见「已知待办 · 未定版本」。服务健康探测的详细设计不写入本文件，阶段 F 只保留实现拆分、依赖与入口/出口。
 
 ## 版本变更
 
@@ -228,7 +228,7 @@ handler 拿到 backend 借出的后端连接后，交给 transformer 完成完�
   - [x] 阶段 C：handler 按 RouteID 执行 pipeline，删除旧 `Filters` 字段。
   - [x] 阶段 D：HTTP 限流 filter（route 维度、429 + `Retry-After`）。
   - [x] 阶段 E：服务级负载均衡（`round_robin` / `random`）。
-  - [ ] 阶段 F：服务健康探测（设计草稿已建，实现未开始）。
+  - [ ] 阶段 F：服务健康探测（设计 v5.1 已建，按 F1–F7 实施）。
   - [ ] 阶段 G：v08 验收与文档收口。
 - [ ] v09 协议扩展
 - [ ] v10 最终完善
@@ -272,7 +272,7 @@ clientConn → Decode → message.Request → filters
 
 ### v08 管道细化
 
-- 健康探测：设计草稿见 `design/backend/HealthTracker.md`；实现与测试未开始。
+- 健康探测：设计 v5.1 见 `design/backend/HealthTracker.md`；按 F1–F7 实施。
 - v08 收口：限流 429 testbed 与跨阶段验收由阶段 G 处理。
 
 ### v09 协议扩展
@@ -311,13 +311,13 @@ v08 三条主线：**filter chain 可配置化**（已完成）、**HTTP 层精�
 |---|---|---|
 | D | HTTP 限流 filter | 已完成 |
 | E | 服务级负载均衡 | 已完成 |
-| F | 服务健康探测 | 进行中（设计草稿） |
+| F | 服务健康探测 | 进行中（设计 v5.1，F1–F7 待实现） |
 | G | v08 验收与文档收口 | 未开始 |
 
 ### 目标
 
 1. 服务级负载均衡：已完成，支持 `round_robin` / `random`。
-2. 服务健康探测：设计草稿已建，实现待排期。
+2. 服务健康探测：设计 v5.1 已建，按 F1–F7 实施。
 3. 收口：testbed 覆盖限流与多实例分发，补配置样例。
 
 ### 设计契约
@@ -337,7 +337,7 @@ v08 三条主线：**filter chain 可配置化**（已完成）、**HTTP 层精�
 7. **两级映射不变**：filter 定「请求→服务」，backend 定「服务→实例」；v08 不做换实例重试。
 8. **注册表与链分离**：`plugins.{tcp,http,transformer}` 只提供配置体，各 `enabled` 与 route `filters` 只提供名字；运行态只组装并集，注册表多余条目不得进入运行态。
 9. **Plan 单次计算**：`Build` 只调用一次 `Calculate`（返回 `*Plan`），`Compile` 只消费 Plan；`ValidateWriting` 可读原始 `platforms` 做声明层校验（nil vs `[]`、auth 是否声明），但不得重复生成 Plan。
-10. **LB 与健康探测分离**：E 阶段已完成选择算法，候选为全部实例；健康状态、摘除与恢复归 F 阶段，由独立文档设计与验收。
+10. **LB 与健康探测分离**：E 阶段已完成选择算法，候选为全部实例；健康状态、摘除与恢复归 F 阶段，详细设计见独立文档，验收在 F1–F7 中执行。
 
 ### 阶段 A —— 插件注册表分类（builder）【已完成】
 
@@ -395,15 +395,106 @@ v08 三条主线：**filter chain 可配置化**（已完成）、**HTTP 层精�
 - E7 样例与文档：样例配置启用 `round_robin` / `random`，`builder/config_test.go` 校验；文档收口。
 - 主要文件：`backend/lb/{lb,round_robin,random}.go`、`backend/{backend,service,model}.go`、`builder/{platform,config,calculate,compile,validate_writing}.go`、`pkg/constant/constant.go`、`configs/*.yaml`、`testbed/*_test.go`。
 
-### 阶段 F —— 服务健康探测【进行中（设计草稿）】
+### 阶段 F —— 服务健康探测（backend + builder）【进行中（设计 v5.1，待实现）】
 
-- **主目标**：为 LB 提供可过滤的实例健康状态。
-- **设计文档**：[design/backend/HealthTracker.md](design/backend/HealthTracker.md)（草稿）
-- **说明**：设计、实现与测试在独立文档维护；本文件只保留阶段依赖与入口/出口。
-- **验收标准**：在独立文档中定义并验收；本文件只保留依赖与入口/出口。
+- **主目标**：为 LB 提供只包含 `healthy` 实例的候选快照，并支持错误率触发、主动探测、退避和恢复。
+- **设计文档**：[design/backend/HealthTracker.md](design/backend/HealthTracker.md)（v5.1，待评审）
 - **依赖**：阶段 E 已完成。
 - **入口**：LB 已能按 `Pick` 从候选实例中选择。
-- **出口**：健康状态可作为 LB 候选过滤输入；测试与验收在独立文档维护。
+- **出口**：`Service.pick` 使用健康快照；`probing` / `dead` 不参与选择；无候选返回 503。
+- **实施顺序**：F1 → F2 → F3 → F4 → F5 → F6 → F7。
+
+#### F1 状态模型与 InstanceHealth（backend）【未开始】
+
+- **目标**：建立 `healthy / probing / dead` 三态和唯一状态存储。
+- **任务**
+  1. 定义 `State`、`instanceStatus`：`addr`、`state`、`updated_at`。
+  2. 实现 `InstanceHealth`：`table`、`stat`、`RWMutex`。
+  3. 实现 `Read`（副本）、`ReadByState`（地址切片）、`Write`（表 + 索引 + 时间）。
+  4. 初始化全部实例为 `healthy`。
+  5. 单测覆盖索引一致性、并发读、写独占、Read 返回副本。
+- **验收**：状态迁移后 `table` 与 `stat` 一致；`-race` 无告警。
+- **主要文件**：`backend/health/{state,instance_health}.go`、`backend/health/*_test.go`。
+
+#### F2 被动链路：Classifier + Reporter（backend）【未开始】
+
+- **目标**：把请求结果转成成功/失败，并用固定窗口错误率触发探测。
+- **任务**
+  1. 定义 `Event{result, addr}`。
+  2. 实现 `Classifier`：2xx/3xx/4xx 成功；5xx、连接、协议失败；池耗尽/无候选不产生 Event。
+  3. 实现 `Reporter`：`total_times`、`err_times` 原子计数。
+  4. 实现固定窗口 tick：先交换计数，再按 `min_samples` 与 `error_rate` 判断。
+  5. 达到阈值推送 probe task；每轮结束清零。
+  6. 单测覆盖成功稀释、最小样本、窗口边界、队列满丢弃、清零。
+- **验收**：低流量不误触发；达到阈值只推送地址；窗口独立统计。
+- **主要文件**：`backend/health/{event,classifier,reporter}.go`、`backend/health/*_test.go`。
+
+#### F3 主动探测：Prober + ProbeScheduler（backend）【未开始】
+
+- **目标**：实现统一参数的连续成功确认、指数退避、`in_flight` 防重复和 `dead` 终态。
+- **任务**
+  1. 定义 `Prober` 接口与 TCP 实现；未知类型返回配置错误。
+  2. 实现 `instanceProbe`：`successes`、`failures`、`backoff`、`next_probe_at`、`in_flight`。
+  3. 实现单调度 goroutine：Reporter task、1s 到期扫描、结果 channel。
+  4. 开始探测：状态检查、`in_flight`、信号量、必要时写 `probing`。
+  5. 成功：计数更新；达到 `success_threshold` 写 `healthy`，否则保持 `probing` 并按 `base_interval` 安排。
+  6. 失败：计数与退避更新；未达 `max_failures` 保持 `probing` 并按退避安排；达到上限写 `dead`、清空下次时间、停止探测。
+  7. 只扫描 `probing`，不扫描 `dead`；`probing` 内未跨阈值不写状态。
+  8. 单测覆盖成功阈值、失败未达/达到上限、退避序列与上限、`in_flight` 防重复、`dead` 不再探测、并发。
+- **验收**：状态迁移符合设计；无 `probing -> probing` 日志；`dead` 不再探测。
+- **主要文件**：`backend/health/{prober,tcp,probe_scheduler}.go`、`backend/health/*_test.go`。
+
+#### F4 编排与快照：HealthTracker（backend）【未开始】
+
+- **目标**：串联被动/主动组件，并提供只含 `healthy` 的候选快照。
+- **任务**
+  1. 实现 `HealthTracker.New`：校验配置，创建 InstanceHealth、Reporter、ProbeScheduler；ProbeScheduler 内部创建 Prober。
+  2. `Start`：先启动 ProbeScheduler，再启动 Reporter。
+  3. `Close`：先停 Reporter，再停 ProbeScheduler；幂等并等待 goroutine。
+  4. `Snapshot`：只读 `healthy`，返回 `[]addr`。
+  5. `health.enabled=false` 时不创建组件，候选使用全部实例。
+  6. 单测覆盖启动/关闭、重复关闭、快照过滤、禁用路径。
+- **验收**：关闭后无后台 goroutine；快照不含 `probing` / `dead`。
+- **主要文件**：`backend/health/tracker.go`、`backend/health/*_test.go`。
+
+#### F5 配置与构建装配（builder）【未开始】
+
+- **目标**：增加 service 级 health 配置，完成默认值、校验和运行态透传。
+- **任务**
+  1. 定义 `HealthConfig`：`enabled`、`reporter`、`probe` 三段。
+  2. 增加 `ServiceConfig.Health`、`PlannedService.Health`、`ServiceRef.Health`。
+  3. `pkg/constant` 增加默认值；`withHealthDefaults` 在 Build 阶段填零值。
+  4. `ValidateWriting` / `ValidateRuntime` 校验：类型、时长、范围、`base_interval <= max_interval`、正整数阈值。
+  5. `Compile` 透传；`backend` 构建时映射为 `health.Config`。
+  6. 单测覆盖默认值、非法值、未知 Prober、配置透传；样例默认关闭。
+- **验收**：非法配置 Build 失败；关闭时运行态不创建健康组件。
+- **主要文件**：`builder/{config,platform,calculate,compile,validate_writing,validate_runtime}.go`、`pkg/constant/constant.go`、`configs/platform.yaml`、`builder/*_test.go`。
+
+#### F6 请求路径与 LB 接入（backend + handler）【未开始】
+
+- **目标**：用健康快照过滤候选，并把选中实例的结果上报给 Reporter。
+- **任务**
+  1. 调整 `BManager.Call` / release 结果契约：回调能拿到选中 `addr`、响应和错误。
+  2. `Service.pick` 改用 `HealthTracker.Snapshot`；空候选返回 `ErrNoInstance`，LB 下标语义不变。
+  3. release 调 `Classifier` 生成 Event，再交 `Reporter`；拨号失败上报，池耗尽/关闭不上报。
+  4. handler 把 `resp` / `err` 传给 release；4xx 成功、5xx 失败；无候选映射 503。
+  5. `buildService` 在启用时创建 HealthTracker；`closeServices` 先停健康组件再关连接池。
+  6. 单测覆盖候选过滤、空候选不建连、5xx 归因、4xx 不归因、禁用行为。
+- **验收**：`probing` / `dead` 不会出现在 `pick` 候选；无候选返回 503；成功和失败都进入窗口统计。
+- **主要文件**：`backend/{backend,service,model}.go`、`handler/handler.go`、`pkg/errors/errors.go`、`backend/*_test.go`、`handler/*_test.go`。
+
+#### F7 集成测试、样例与文档收口（testbed + docs）【未开始】
+
+- **目标**：验证健康探测在真实请求链路中的摘除、恢复和终态行为。
+- **任务**
+  1. testbed：用短窗口、低 `min_samples` 配置；关闭后端触发错误率 → `probing`，在 `max_failures` 前恢复后端，连续成功 → `healthy`。
+  2. testbed：缩短 `base_interval`，保持后端关闭直到 `max_failures`，进入 `dead`；恢复后端后确认 `dead` 不再探测、不再恢复。
+  3. testbed：`probing` / `dead` 不参与分发；全部不可用时返回 503。
+  4. testbed：4xx 不触发摘除；5xx 触发错误率统计；必要时新增可控 4xx / 5xx 测试 transformer。
+  5. 更新样例配置（默认关闭，示例启用）与设计文档验收记录。
+  6. 执行 `go build ./...`、`go vet ./...`、`go test -race ./...`。
+- **验收**：F1–F6 单测与 testbed 全通过；样例 `builder.Build` 成功；文档与实现一致。
+- **主要文件**：`testbed/*_test.go`、`configs/*.yaml`、`design/backend/HealthTracker.md`、`ROADMAP.md`。
 
 ### 阶段 G —— v08 验收与文档收口【未开始】
 
@@ -432,7 +523,7 @@ v08 三条主线：**filter chain 可配置化**（已完成）、**HTTP 层精�
 
 ### 顺序
 
-`A → B → C → D → E → F → G`。A–E 已完成；F 为健康探测（设计草稿已建，实现待开始）；G 为 v08 收口。F 完成后再做 G。
+`A → B → C → D → E → F → G`。A–E 已完成；F 为健康探测（设计 v5.1，按 F1 → F7 实施）；G 为 v08 收口。F 完成后再做 G。
 
 ## 变更记录
 
@@ -443,3 +534,4 @@ v08 三条主线：**filter chain 可配置化**（已完成）、**HTTP 层精�
 | 2026-11-04 | 健康探测移出 roadmap | 探测设计复杂，避免与 LB 实现混在一起 | F 只保留入口/出口，详细文档另开 |
 | 2026-11-21 | 阶段 E 完成 | LB 框架、round_robin/random、testbed 与样例落地 | v08 剩余 F/G |
 | 2026-11-21 | 阶段 F 进入设计 | 健康探测设计草稿建立 | F 状态改为进行中（设计草稿） |
+| 2026-11-22 | 阶段 F 拆分实现计划 | 设计 v5.1 收口，明确 F1–F7 任务、验收与文件 | F 从设计草稿细化为可执行任务 |
