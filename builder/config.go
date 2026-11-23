@@ -135,3 +135,9 @@ type PoolConfig struct {
 	IdleTimeout   time.Duration `yaml:"idle_timeout"`
 	WaitTimeout   time.Duration `yaml:"wait_timeout"`
 }
+
+type ReporterConfig struct {
+	Window     time.Duration `yaml:"window"`
+	ErrorRate  float64       `yaml:"error_rate"`
+	MinSamples int           `yaml:"min_samples"`
+}

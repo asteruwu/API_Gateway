@@ -99,3 +99,8 @@ const DefaultPoolReapIntervalMin = 100 * time.Millisecond
 
 // DefaultPoolReapIntervalMax reaper 扫描间隔上限
 const DefaultPoolReapIntervalMax = 30 * time.Second
+
+// ===== backend health 健康探测 =====
+
+// DefaultReporterTaskQueueSize Reporter 推送 probe task 的有界队列容量
+const DefaultReporterTaskQueueSize = 32
