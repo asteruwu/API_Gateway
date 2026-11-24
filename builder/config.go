@@ -141,3 +141,14 @@ type ReporterConfig struct {
 	ErrorRate  float64       `yaml:"error_rate"`
 	MinSamples int           `yaml:"min_samples"`
 }
+
+type ProbeConfig struct {
+	Type             string        `yaml:"type"`
+	Timeout          time.Duration `yaml:"timeout"`
+	BaseInterval     time.Duration `yaml:"base_interval"`
+	MaxInterval      time.Duration `yaml:"max_interval"`
+	Jitter           float64       `yaml:"jitter"`
+	SuccessThreshold int           `yaml:"success_threshold"`
+	MaxFailures      int           `yaml:"max_failures"`
+	MaxConcurrent    int           `yaml:"max_concurrent"`
+}

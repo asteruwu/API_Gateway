@@ -104,3 +104,9 @@ const DefaultPoolReapIntervalMax = 30 * time.Second
 
 // DefaultReporterTaskQueueSize Reporter 推送 probe task 的有界队列容量
 const DefaultReporterTaskQueueSize = 32
+
+// ProberTypeTCP TCP 拨号探活
+const ProberTypeTCP = "tcp"
+
+// DefaultProbeScanInterval 调度器扫描 probing 到期实例的间隔
+const DefaultProbeScanInterval = time.Minute
