@@ -104,6 +104,7 @@ type TestTransformerConfig struct{}
 type BackendConfig struct {
 	Service []ServiceRef
 	Pool    PoolConfig
+	Health  HealthConfig
 }
 
 type ServiceRef struct {
@@ -134,6 +135,12 @@ type PoolConfig struct {
 	BorrowTimeout time.Duration `yaml:"borrow_timeout"`
 	IdleTimeout   time.Duration `yaml:"idle_timeout"`
 	WaitTimeout   time.Duration `yaml:"wait_timeout"`
+}
+
+type HealthConfig struct {
+	Enabled  bool           `yaml:"enabled"`
+	Reporter ReporterConfig `yaml:"reporter"`
+	Probe    ProbeConfig    `yaml:"probe"`
 }
 
 type ReporterConfig struct {

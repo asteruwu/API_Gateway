@@ -1,6 +1,7 @@
 package health
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +17,7 @@ type Reporter struct {
 	tasks      chan string
 	done       chan struct{}
 	closed     atomic.Bool
+	loopWG     sync.WaitGroup
 }
 
 type instanceError struct {
@@ -43,20 +45,25 @@ func (r *Reporter) Tasks() <-chan string {
 }
 
 func (r *Reporter) Start() {
+	if r.closed.Load() {
+		return
+	}
+	r.loopWG.Add(1)
 	go r.loop()
 }
 
 func (r *Reporter) Close() {
-	if !r.closed.CompareAndSwap(false, true) {
-		return
+	if r.closed.CompareAndSwap(false, true) {
+		close(r.done)
 	}
-	close(r.done)
+	r.loopWG.Wait()
 }
 
 func (r *Reporter) loop() {
+	defer r.loopWG.Done()
 	ticker := time.NewTicker(r.window)
 	defer ticker.Stop()
-	for {
+	for !r.closed.Load() {
 		select {
 		case <-r.done:
 			return
@@ -69,6 +76,9 @@ func (r *Reporter) loop() {
 }
 
 func (r *Reporter) pushTask(addr string) {
+	if r.closed.Load() {
+		return
+	}
 	select {
 	case r.tasks <- addr:
 	default:
@@ -76,6 +86,9 @@ func (r *Reporter) pushTask(addr string) {
 }
 
 func (r *Reporter) Report(e Event) {
+	if r.closed.Load() {
+		return
+	}
 	ie, ok := r.table[e.Addr]
 	if !ok {
 		return

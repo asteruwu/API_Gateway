@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"math/rand/v2"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,8 +33,12 @@ type ProbeScheduler struct {
 
 	table map[string]*instanceProbe
 
-	done   chan struct{}
-	closed atomic.Bool
+	done    chan struct{}
+	closed  atomic.Bool
+	loopWG  sync.WaitGroup
+	probeWG sync.WaitGroup
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 // instanceProbe 单个实例的探测进度
@@ -55,7 +60,10 @@ func NewProbeScheduler(addrs []string, health *InstanceHealth, prober Prober, ta
 	for _, addr := range addrs {
 		table[addr] = &instanceProbe{}
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &ProbeScheduler{
+		ctx:              ctx,
+		cancel:           cancel,
 		health:           health,
 		prober:           prober,
 		timeout:          cfg.Timeout,
@@ -75,20 +83,28 @@ func NewProbeScheduler(addrs []string, health *InstanceHealth, prober Prober, ta
 }
 
 func (s *ProbeScheduler) Start() {
+	if s.closed.Load() {
+		return
+	}
+	s.loopWG.Add(1)
 	go s.loop()
 }
 
 func (s *ProbeScheduler) Close() {
-	if !s.closed.CompareAndSwap(false, true) {
-		return
+	if s.closed.CompareAndSwap(false, true) {
+		s.cancel()
+		close(s.done)
 	}
-	close(s.done)
+	// 先停调度，避免等待期间新增探测
+	s.loopWG.Wait()
+	s.probeWG.Wait()
 }
 
 func (s *ProbeScheduler) loop() {
+	defer s.loopWG.Done()
 	ticker := time.NewTicker(s.scanInterval)
 	defer ticker.Stop()
-	for {
+	for !s.closed.Load() {
 		select {
 		case <-s.done:
 			return
@@ -122,6 +138,9 @@ func (s *ProbeScheduler) scanProbing() {
 }
 
 func (s *ProbeScheduler) startProbe(addr string) {
+	if s.closed.Load() {
+		return
+	}
 	ip, ok := s.table[addr]
 	if !ok || ip.inFlight {
 		return
@@ -135,17 +154,25 @@ func (s *ProbeScheduler) startProbe(addr string) {
 	if status, ok := s.health.Read(addr); ok && status.state != StateProbing {
 		s.health.Write(addr, StateProbing)
 	}
+	s.probeWG.Add(1)
 	go s.runProbe(addr)
 }
 
 func (s *ProbeScheduler) runProbe(addr string) {
-	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	defer s.probeWG.Done()
+	ctx, cancel := context.WithTimeout(s.ctx, s.timeout)
 	defer cancel()
 	err := s.prober.Probe(ctx, addr)
-	s.results <- probeResult{addr: addr, err: err}
+	select {
+	case s.results <- probeResult{addr: addr, err: err}:
+	case <-s.done:
+	}
 }
 
 func (s *ProbeScheduler) onProbeResult(res probeResult) {
+	if s.closed.Load() {
+		return
+	}
 	ip, ok := s.table[res.addr]
 	if !ok {
 		<-s.sem
