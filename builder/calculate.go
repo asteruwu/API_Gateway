@@ -25,6 +25,7 @@ type PlannedService struct {
 	Transformer string
 	LB          string
 	Instances   []InstanceConfig
+	Health      HealthConfig
 }
 
 func Calculate(gw GatewayConfig, platforms []PlatformConfig) *Plan {
@@ -52,6 +53,7 @@ func collectPlanData(enabled []string, platforms []PlatformConfig) (httpFilters 
 				Transformer: s.Transformer,
 				LB:          flattenLBPolicy(s.LB),
 				Instances:   append([]InstanceConfig(nil), s.Instances...),
+				Health:      s.Health,
 			})
 
 			for i, r := range s.Routes {

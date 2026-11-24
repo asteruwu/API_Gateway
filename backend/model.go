@@ -4,6 +4,7 @@ import (
 	"net"
 	"sync/atomic"
 
+	"API_Gateway/backend/health"
 	"API_Gateway/backend/lb"
 	cp "API_Gateway/backend/pool"
 )
@@ -16,6 +17,7 @@ type Service struct {
 	name      string
 	instances []*Instance
 	balancer  lb.LoadBalancer
+	tracker   *health.HealthTracker
 }
 
 type Instance struct {

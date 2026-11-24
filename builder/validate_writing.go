@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	gconst "API_Gateway/pkg/constant"
 	gerrors "API_Gateway/pkg/errors"
@@ -29,6 +30,7 @@ func ValidateWriting(gw GatewayConfig, platforms []PlatformConfig, plan *Plan) e
 	errs = append(errs, validateRouteAuthDeclarations(platforms, plan)...)
 	errs = append(errs, validateRouteRateLimitDeclarations(platforms, plan)...)
 	errs = append(errs, validateServiceLBPolicy(plan, gw.LoadBalancer.Enabled)...)
+	errs = append(errs, validateHealthConfigs(plan)...)
 	errs = append(errs, validatePluginReferences(gw, plan)...)
 	errs = append(errs, validateEnabledUniqueness(gw)...)
 	errs = append(errs, validatePoolConfig(gw.Pool)...)
@@ -125,6 +127,73 @@ func effectiveLBPolicySet(enabled []string) []string {
 		return []string{gconst.DefaultLBPolicy}
 	}
 	return enabled
+}
+
+// validateHealthConfigs 校验启用了健康探测的 service 配置；零值表示使用默认值
+func validateHealthConfigs(plan *Plan) []error {
+	var errs []error
+	for _, s := range plan.Services {
+		if !s.Health.Enabled {
+			continue
+		}
+		errs = append(errs, validateHealthConfig(s.Name, s.Health)...)
+	}
+	return errs
+}
+
+func validateHealthConfig(service string, cfg HealthConfig) []error {
+	where := fmt.Sprintf("service %q", service)
+	var errs []error
+
+	if cfg.Probe.Type != "" && !isSupportedProberType(cfg.Probe.Type) {
+		errs = append(errs, fmt.Errorf("%w: %s uses unsupported prober type %q",
+			gerrors.ErrInvalidHealthConfig, where, cfg.Probe.Type))
+	}
+	if cfg.Reporter.Window < 0 {
+		errs = append(errs, fmt.Errorf("%w: %s reporter.window must not be negative", gerrors.ErrInvalidHealthConfig, where))
+	}
+	if cfg.Reporter.ErrorRate < 0 || cfg.Reporter.ErrorRate > 1 {
+		errs = append(errs, fmt.Errorf("%w: %s reporter.error_rate must be in [0,1]", gerrors.ErrInvalidHealthConfig, where))
+	}
+	if cfg.Reporter.MinSamples < 0 {
+		errs = append(errs, fmt.Errorf("%w: %s reporter.min_samples must not be negative", gerrors.ErrInvalidHealthConfig, where))
+	}
+	if cfg.Probe.Timeout < 0 {
+		errs = append(errs, fmt.Errorf("%w: %s probe.timeout must not be negative", gerrors.ErrInvalidHealthConfig, where))
+	}
+	if cfg.Probe.BaseInterval < 0 || (cfg.Probe.BaseInterval > 0 && cfg.Probe.BaseInterval < time.Second) {
+		errs = append(errs, fmt.Errorf("%w: %s probe.base_interval must be at least 1s", gerrors.ErrInvalidHealthConfig, where))
+	}
+	if cfg.Probe.MaxInterval < 0 {
+		errs = append(errs, fmt.Errorf("%w: %s probe.max_interval must not be negative", gerrors.ErrInvalidHealthConfig, where))
+	}
+	if cfg.Probe.Jitter < 0 || cfg.Probe.Jitter >= 1 {
+		errs = append(errs, fmt.Errorf("%w: %s probe.jitter must be in [0,1)", gerrors.ErrInvalidHealthConfig, where))
+	}
+	if cfg.Probe.SuccessThreshold < 0 {
+		errs = append(errs, fmt.Errorf("%w: %s probe.success_threshold must not be negative", gerrors.ErrInvalidHealthConfig, where))
+	}
+	if cfg.Probe.MaxFailures < 0 {
+		errs = append(errs, fmt.Errorf("%w: %s probe.max_failures must not be negative", gerrors.ErrInvalidHealthConfig, where))
+	}
+	if cfg.Probe.MaxConcurrent < 0 {
+		errs = append(errs, fmt.Errorf("%w: %s probe.max_concurrent must not be negative", gerrors.ErrInvalidHealthConfig, where))
+	}
+
+	if cfg.Probe.BaseInterval > 0 && cfg.Probe.MaxInterval > 0 && cfg.Probe.BaseInterval > cfg.Probe.MaxInterval {
+		errs = append(errs, fmt.Errorf("%w: %s probe.base_interval %s exceeds max_interval %s",
+			gerrors.ErrInvalidHealthConfig, where, cfg.Probe.BaseInterval, cfg.Probe.MaxInterval))
+	}
+	return errs
+}
+
+func isSupportedProberType(typ string) bool {
+	switch typ {
+	case gconst.ProberTypeTCP:
+		return true
+	default:
+		return false
+	}
 }
 
 // validateRouteDeclarations 校验 route 的必填字段、methods 元素与 filters 局部唯一性

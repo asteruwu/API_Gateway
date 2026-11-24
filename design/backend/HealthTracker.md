@@ -563,11 +563,7 @@ type ProbeConfig struct {
 }
 ```
 
-注释中的值为默认值；零值由 Build 阶段统一填充。
-
 - **校验**：`window`、`timeout` 为正数；`base_interval >= 1s` 且 `base_interval <= max_interval`；`error_rate` 在 `(0,1]`；`jitter` 在 `[0,1)`；`min_samples`、`success_threshold`、`max_failures`、`max_concurrent` 为正整数。
-- **非法值**：Build 阶段直接失败。
-- **热更新**：首版不支持，修改配置需重启。
 
 ## 4.5 设计取舍
 

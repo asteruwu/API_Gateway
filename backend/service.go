@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"API_Gateway/backend/health"
 	"API_Gateway/backend/lb"
 	cp "API_Gateway/backend/pool"
 	"API_Gateway/builder"
@@ -29,10 +30,19 @@ func buildService(ref builder.ServiceRef, poolCfg builder.PoolConfig) (*Service,
 	if err != nil {
 		return nil, fmt.Errorf("service %q: %w", ref.Name, err)
 	}
+	instances := buildInstances(ref.Instances, poolCfg)
+	tracker, err := buildHealthTracker(ref.Name, instances, ref.Health)
+	if err != nil {
+		return nil, errors.Join(err, closeInstances(instances))
+	}
+	if tracker != nil {
+		tracker.Start()
+	}
 	return &Service{
 		name:      ref.Name,
-		instances: buildInstances(ref.Instances, poolCfg),
+		instances: instances,
 		balancer:  balancer,
+		tracker:   tracker,
 	}, nil
 }
 
@@ -47,9 +57,24 @@ func buildInstances(refs []builder.InstanceConfig, poolCfg builder.PoolConfig) [
 	return instances
 }
 
+func buildHealthTracker(service string, ins []*Instance, healthCfg builder.HealthConfig) (*health.HealthTracker, error) {
+	addrs := make([]string, 0, len(ins))
+	for _, i := range ins {
+		addrs = append(addrs, i.addr)
+	}
+	tracker, err := health.New(healthCfg, addrs)
+	if err != nil {
+		return nil, fmt.Errorf("service %q: %w", service, err)
+	}
+	return tracker, nil
+}
+
 func closeServices(services map[string]*Service) error {
 	var errs []error
 	for _, svc := range services {
+		if svc.tracker != nil {
+			errs = append(errs, svc.tracker.Close())
+		}
 		errs = append(errs, closeInstances(svc.instances))
 	}
 	return errors.Join(errs...)

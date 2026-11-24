@@ -16,6 +16,7 @@ type ServiceConfig struct {
 	LB          string            `yaml:"lb"`
 	Instances   []InstanceConfig  `yaml:"instances"`
 	Routes      []RouteRuleConfig `yaml:"routes"`
+	Health      HealthConfig      `yaml:"health"`
 }
 
 type RouteRuleConfig struct {

@@ -104,13 +104,13 @@ type TestTransformerConfig struct{}
 type BackendConfig struct {
 	Service []ServiceRef
 	Pool    PoolConfig
-	Health  HealthConfig
 }
 
 type ServiceRef struct {
 	Name      string
 	LB        string
 	Instances []InstanceConfig
+	Health    HealthConfig
 }
 
 // ===== 共用 =====

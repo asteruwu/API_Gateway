@@ -36,8 +36,7 @@ func trackerTestConfig() builder.HealthConfig {
 
 func newTestTracker(t *testing.T, addrs []string) *HealthTracker {
 	t.Helper()
-	cfg := builder.BackendConfig{Health: trackerTestConfig()}
-	h, err := New(cfg.Health, addrs)
+	h, err := New(trackerTestConfig(), addrs)
 	if err != nil {
 		t.Fatal(err)
 	}

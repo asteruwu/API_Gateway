@@ -39,6 +39,9 @@ var (
 
 	// ErrInvalidRateLimitConfig 限流配置非法，或路由限流声明与 rate_limit 插件启用状态不一致
 	ErrInvalidRateLimitConfig = errors.New("builder: invalid rate limit config")
+
+	// ErrInvalidHealthConfig 健康探测配置非法
+	ErrInvalidHealthConfig = errors.New("builder: invalid health config")
 )
 
 // connector errors

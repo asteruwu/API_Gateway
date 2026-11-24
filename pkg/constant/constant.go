@@ -110,3 +110,36 @@ const ProberTypeTCP = "tcp"
 
 // DefaultProbeScanInterval 调度器扫描 probing 到期实例的间隔
 const DefaultProbeScanInterval = time.Minute
+
+// DefaultHealthReporterWindow Reporter 固定统计窗口
+const DefaultHealthReporterWindow = 10 * time.Second
+
+// DefaultHealthReporterErrorRate Reporter 触发探测的错误率阈值
+const DefaultHealthReporterErrorRate = 0.5
+
+// DefaultHealthReporterMinSamples Reporter 触发探测所需的最小样本数
+const DefaultHealthReporterMinSamples = 5
+
+// DefaultHealthProbeType 默认探活协议
+const DefaultHealthProbeType = ProberTypeTCP
+
+// DefaultHealthProbeTimeout 单次探测超时
+const DefaultHealthProbeTimeout = 1 * time.Second
+
+// DefaultHealthProbeBaseInterval 探测基础间隔
+const DefaultHealthProbeBaseInterval = 2 * time.Second
+
+// DefaultHealthProbeMaxInterval 探测退避上限
+const DefaultHealthProbeMaxInterval = 1 * time.Minute
+
+// DefaultHealthProbeJitter 探测间隔抖动比例
+const DefaultHealthProbeJitter = 0.2
+
+// DefaultHealthProbeSuccessThreshold 连续成功达到该次数后恢复 healthy
+const DefaultHealthProbeSuccessThreshold = 2
+
+// DefaultHealthProbeMaxFailures 连续失败达到该次数后进入 dead
+const DefaultHealthProbeMaxFailures = 5
+
+// DefaultHealthProbeMaxConcurrent 同时进行的探测上限
+const DefaultHealthProbeMaxConcurrent = 8
